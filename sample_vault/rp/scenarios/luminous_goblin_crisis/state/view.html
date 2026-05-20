@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>State View - luminous_goblin_crisis</title>
+  <link rel="stylesheet" href="./view.css" />
+</head>
+<body>
+  <main class="state-view" data-scenario-id="luminous_goblin_crisis">
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">Scenario State</p>
+        <h1>ルミナス王国ゴブリン大量発生</h1>
+        <p class="subtitle">
+          セッション中の current state を確認するための静的ビューです。
+          実データはアプリ側で各 <code>data-bind</code> 要素へ差し込む想定です。
+        </p>
+      </div>
+      <div class="status-pill">
+        <span class="status-dot"></span>
+        <span data-bind="quests.goblin_crisis.status">in_progress</span>
+      </div>
+    </header>
+
+    <section class="grid grid-3">
+      <article class="card">
+        <h2>現在地</h2>
+        <p class="main-value" data-bind="current_location">王都ルミナス 指定広場</p>
+        <p class="sub-value" data-bind="time">第1章 初日 朝</p>
+      </article>
+
+      <article class="card">
+        <h2>シーン</h2>
+        <p class="main-value" data-bind="scene.phase">party_meeting</p>
+        <div class="meta-row"><span>天候</span><strong data-bind="scene.weather">clear</strong></div>
+        <div class="meta-row"><span>危険度</span><strong data-bind="scene.danger_level">0</strong></div>
+      </article>
+
+      <article class="card">
+        <h2>王国状況</h2>
+        <div class="meta-row"><span>交易路安全</span><strong data-bind="world.trade_routes_secure">false</strong></div>
+        <div class="meta-row"><span>村落被害</span><strong data-bind="world.village_damage_level">2</strong></div>
+        <div class="meta-row"><span>王国警戒度</span><strong data-bind="world.kingdom_alert_level">2</strong></div>
+      </article>
+    </section>
+
+    <section class="card wide">
+      <div class="section-header">
+        <h2>クエスト進行</h2>
+        <span class="tag" data-bind="quests.goblin_crisis.phase">introduction</span>
+      </div>
+      <div class="progress-grid">
+        <div class="progress-item"><span class="count" data-bind="quests.goblin_crisis.goblins_defeated">0</span><span class="label">討伐ゴブリン</span></div>
+        <div class="progress-item"><span class="count" data-bind="quests.goblin_crisis.nests_discovered">0</span><span class="label">発見した巣</span></div>
+        <div class="progress-item"><span class="count" data-bind="quests.goblin_crisis.nests_cleared">0</span><span class="label">駆除した巣</span></div>
+        <div class="progress-item"><span class="count" data-bind="quests.goblin_crisis.shamans_defeated">0</span><span class="label">シャーマン討伐</span></div>
+        <div class="progress-item"><span class="count" data-bind="quests.goblin_crisis.lord_spawn_defeated">0</span><span class="label">上位個体討伐</span></div>
+        <div class="progress-item"><span class="count" data-bind="quests.goblin_crisis.civilians_rescued">0</span><span class="label">救助民間人</span></div>
+      </div>
+    </section>
+
+    <section class="grid grid-2">
+      <article class="card">
+        <h2>完了ステップ</h2>
+        <ul class="list" data-bind-list="quests.goblin_crisis.steps_completed"><li>quest_accepted</li></ul>
+      </article>
+      <article class="card">
+        <h2>未完了ステップ</h2>
+        <ul class="list" data-bind-list="quests.goblin_crisis.steps_pending">
+          <li>party_introduction</li>
+          <li>receive_first_assignment</li>
+          <li>investigate_goblin_activity</li>
+        </ul>
+      </article>
+    </section>
+
+    <section class="card wide">
+      <h2>キャラクター</h2>
+      <div class="character-grid">
+        <article class="character-card"><h3>ユーザー</h3><dl><dt>状態</dt><dd data-bind="characters.user.status">active</dd><dt>負傷</dt><dd data-bind="characters.user.injury">none</dd><dt>現在地</dt><dd data-bind="characters.user.location">王都ルミナス 指定広場</dd></dl></article>
+        <article class="character-card"><h3>アリア</h3><dl><dt>HP</dt><dd data-bind="characters.aria_claudewell.hp">30</dd><dt>気分</dt><dd data-bind="characters.aria_claudewell.mood">厳格</dd><dt>負傷</dt><dd data-bind="characters.aria_claudewell.injury">none</dd><dt>状態</dt><dd data-bind="characters.aria_claudewell.status">active</dd></dl></article>
+        <article class="character-card"><h3>ティアリエル</h3><dl><dt>HP</dt><dd data-bind="characters.tiariel_alwen.hp">22</dd><dt>気分</dt><dd data-bind="characters.tiariel_alwen.mood">穏やか</dd><dt>負傷</dt><dd data-bind="characters.tiariel_alwen.injury">none</dd><dt>状態</dt><dd data-bind="characters.tiariel_alwen.status">active</dd></dl></article>
+        <article class="character-card"><h3>テオラ</h3><dl><dt>HP</dt><dd data-bind="characters.theora.hp">18</dd><dt>MP</dt><dd data-bind="characters.theora.mp">30</dd><dt>気分</dt><dd data-bind="characters.theora.mood">気怠げ</dd><dt>負傷</dt><dd data-bind="characters.theora.injury">none</dd><dt>状態</dt><dd data-bind="characters.theora.status">active</dd></dl></article>
+      </div>
+    </section>
+
+    <section class="card wide">
+      <h2>関係値</h2>
+      <div class="relationship-grid">
+        <article class="relationship-card">
+          <h3>アリア → ユーザー</h3>
+          <div class="bar-row"><span>信頼</span><meter min="0" max="100" value="20" data-bind-meter="relationships.aria_claudewell:user.trust"></meter><strong data-bind="relationships.aria_claudewell:user.trust">20</strong></div>
+          <div class="bar-row"><span>警戒</span><meter min="0" max="100" value="45" data-bind-meter="relationships.aria_claudewell:user.suspicion"></meter><strong data-bind="relationships.aria_claudewell:user.suspicion">45</strong></div>
+          <p data-bind="relationships.aria_claudewell:user.note">初対面。アリアはユーザーを監督対象として職務上警戒している。</p>
+        </article>
+        <article class="relationship-card">
+          <h3>ティアリエル → ユーザー</h3>
+          <div class="bar-row"><span>信頼</span><meter min="0" max="100" value="35" data-bind-meter="relationships.tiariel_alwen:user.trust"></meter><strong data-bind="relationships.tiariel_alwen:user.trust">35</strong></div>
+          <div class="bar-row"><span>警戒</span><meter min="0" max="100" value="15" data-bind-meter="relationships.tiariel_alwen:user.suspicion"></meter><strong data-bind="relationships.tiariel_alwen:user.suspicion">15</strong></div>
+          <p data-bind="relationships.tiariel_alwen:user.note">初対面。ティアリエルは柔らかく接しつつ、ユーザーの人柄を観察している。</p>
+        </article>
+        <article class="relationship-card">
+          <h3>テオラ → ユーザー</h3>
+          <div class="bar-row"><span>信頼</span><meter min="0" max="100" value="25" data-bind-meter="relationships.theora:user.trust"></meter><strong data-bind="relationships.theora:user.trust">25</strong></div>
+          <div class="bar-row"><span>警戒</span><meter min="0" max="100" value="25" data-bind-meter="relationships.theora:user.suspicion"></meter><strong data-bind="relationships.theora:user.suspicion">25</strong></div>
+          <p data-bind="relationships.theora:user.note">初対面。テオラは軽口を交えながら、ユーザーが足手まといでないか見ようとしている。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="card wide">
+      <h2>重要フラグ</h2>
+      <div class="flag-grid">
+        <span class="flag" data-bind-bool="flags.party_formed">party_formed</span>
+        <span class="flag" data-bind-bool="flags.goblin_abnormality_suspected">goblin_abnormality_suspected</span>
+        <span class="flag" data-bind-bool="flags.mana_anomaly_detected">mana_anomaly_detected</span>
+        <span class="flag" data-bind-bool="flags.northwest_pattern_suspected">northwest_pattern_suspected</span>
+        <span class="flag" data-bind-bool="flags.northwest_cave_identified">northwest_cave_identified</span>
+        <span class="flag" data-bind-bool="flags.goblin_lord_identified">goblin_lord_identified</span>
+        <span class="flag" data-bind-bool="flags.goblin_lord_defeated">goblin_lord_defeated</span>
+        <span class="flag" data-bind-bool="flags.mana_pool_identified">mana_pool_identified</span>
+        <span class="flag" data-bind-bool="flags.mana_pool_resolved">mana_pool_resolved</span>
+        <span class="flag" data-bind-bool="flags.king_luminous_iii_alive">king_luminous_iii_alive</span>
+        <span class="flag" data-bind-bool="flags.king_luminous_iii_joined_battle">king_luminous_iii_joined_battle</span>
+      </div>
+    </section>
+
+    <section class="card wide">
+      <details class="image-gallery">
+        <summary class="gallery-summary"><h2>準備画像一覧</h2></summary>
+        <div class="gallery-body">
+
+          <div class="gallery-character">
+            <h3>アリア</h3>
+            <div class="gallery-grid">
+              <figure class="gallery-item"><img src="/api/assets/images/luminous_goblin_crisis/aria_claudewell/nomal.png" alt="通常" loading="lazy"><figcaption>通常</figcaption></figure>
+              <figure class="gallery-item"><img src="/api/assets/images/luminous_goblin_crisis/aria_claudewell/serious.png" alt="真剣" loading="lazy"><figcaption>真剣</figcaption></figure>
+              <figure class="gallery-item"><img src="/api/assets/images/luminous_goblin_crisis/aria_claudewell/combat.png" alt="戦闘" loading="lazy"><figcaption>戦闘</figcaption></figure>
+              <figure class="gallery-item"><img src="/api/assets/images/luminous_goblin_crisis/aria_claudewell/angry.png" alt="怒り" loading="lazy"><figcaption>怒り</figcaption></figure>
+              <figure class="gallery-item"><img src="/api/assets/images/luminous_goblin_crisis/aria_claudewell/injured.png" alt="負傷" loading="lazy"><figcaption>負傷</figcaption></figure>
+              <figure class="gallery-item"><img src="/api/assets/images/luminous_goblin_crisis/aria_claudewell/thinking.png" alt="思案" loading="lazy"><figcaption>思案</figcaption></figure>
+            </div>
+          </div>
+
+          <div class="gallery-character">
+            <h3>ティアリエル</h3>
+            <div class="gallery-grid">
+              <figure class="gallery-item"><img src="/api/assets/images/luminous_goblin_crisis/tiariel_alwen/nomal.png" alt="通常" loading="lazy"><figcaption>通常</figcaption></figure>
+              <figure class="gallery-item"><img src="/api/assets/images/luminous_goblin_crisis/tiariel_alwen/smile.png" alt="微笑" loading="lazy"><figcaption>微笑</figcaption></figure>
+              <figure class="gallery-item"><img src="/api/assets/images/luminous_goblin_crisis/tiariel_alwen/serious.png" alt="真剣" loading="lazy"><figcaption>真剣</figcaption></figure>
+              <figure class="gallery-item"><img src="/api/assets/images/luminous_goblin_crisis/tiariel_alwen/combat.png" alt="戦闘" loading="lazy"><figcaption>戦闘</figcaption></figure>
+              <figure class="gallery-item"><img src="/api/assets/images/luminous_goblin_crisis/tiariel_alwen/sad.png" alt="悲しみ" loading="lazy"><figcaption>悲しみ</figcaption></figure>
+              <figure class="gallery-item"><img src="/api/assets/images/luminous_goblin_crisis/tiariel_alwen/thinking.png" alt="思案" loading="lazy"><figcaption>思案</figcaption></figure>
+            </div>
+          </div>
+
+          <div class="gallery-character">
+            <h3>テオラ</h3>
+            <div class="gallery-grid">
+              <figure class="gallery-item"><img src="/api/assets/images/luminous_goblin_crisis/theora/nomal.png" alt="通常" loading="lazy"><figcaption>通常</figcaption></figure>
+              <figure class="gallery-item"><img src="/api/assets/images/luminous_goblin_crisis/theora/smile.png" alt="微笑" loading="lazy"><figcaption>微笑</figcaption></figure>
+              <figure class="gallery-item"><img src="/api/assets/images/luminous_goblin_crisis/theora/serious.png" alt="真剣" loading="lazy"><figcaption>真剣</figcaption></figure>
+              <figure class="gallery-item"><img src="/api/assets/images/luminous_goblin_crisis/theora/combat.png" alt="戦闘" loading="lazy"><figcaption>戦闘</figcaption></figure>
+              <figure class="gallery-item"><img src="/api/assets/images/luminous_goblin_crisis/theora/angry.png" alt="怒り" loading="lazy"><figcaption>怒り</figcaption></figure>
+              <figure class="gallery-item"><img src="/api/assets/images/luminous_goblin_crisis/theora/surprised.png" alt="驚き" loading="lazy"><figcaption>驚き</figcaption></figure>
+              <figure class="gallery-item"><img src="/api/assets/images/luminous_goblin_crisis/theora/thinking.png" alt="思案" loading="lazy"><figcaption>思案</figcaption></figure>
+            </div>
+          </div>
+
+        </div>
+      </details>
+    </section>
+  </main>
+</body>
+</html>

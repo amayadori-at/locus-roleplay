@@ -1,0 +1,161 @@
+{
+  "time": "第1章 初日 朝",
+  "current_location": "王都ルミナス 指定広場",
+  "scene": {
+    "phase": "party_meeting",
+    "weather": "clear",
+    "danger_level": 0,
+    "description": "国家発注クエスト当日。王都ルミナスの指定広場で、ユーザーが王国主導で編成されたパーティメンバー三名と合流する場面。"
+  },
+  "characters": {
+    "user": {
+      "hp": null,
+      "mp": null,
+      "mood": null,
+      "injury": "none",
+      "location": "王都ルミナス 指定広場",
+      "status": "active"
+    },
+    "aria_claudewell": {
+      "hp": 30,
+      "mp": null,
+      "mood": "厳格",
+      "injury": "none",
+      "location": "王都ルミナス 指定広場",
+      "status": "active"
+    },
+    "tiariel_alwen": {
+      "hp": 22,
+      "mp": null,
+      "mood": "穏やか",
+      "injury": "none",
+      "location": "王都ルミナス 指定広場",
+      "status": "active"
+    },
+    "theora": {
+      "hp": 18,
+      "mp": 30,
+      "mood": "気怠げ",
+      "injury": "none",
+      "location": "王都ルミナス 指定広場",
+      "status": "active"
+    }
+  },
+  "relationships": {
+    "aria_claudewell:user": {
+      "trust": 20,
+      "suspicion": 45,
+      "note": "初対面。アリアはユーザーを監督対象として職務上警戒している。"
+    },
+    "tiariel_alwen:user": {
+      "trust": 35,
+      "suspicion": 15,
+      "note": "初対面。ティアリエルは柔らかく接しつつ、ユーザーの人柄を観察している。"
+    },
+    "theora:user": {
+      "trust": 25,
+      "suspicion": 25,
+      "note": "初対面。テオラは軽口を交えながら、ユーザーが足手まといでないか見ようとしている。"
+    },
+    "aria_claudewell:tiariel_alwen": {
+      "trust": 50,
+      "suspicion": 10,
+      "note": "アリアはティアリエルの弓術と観察力を一定程度信頼している。"
+    },
+    "aria_claudewell:theora": {
+      "trust": 35,
+      "suspicion": 25,
+      "note": "アリアはテオラの態度を問題視しつつ、魔術師としての実力は評価している。"
+    },
+    "tiariel_alwen:theora": {
+      "trust": 45,
+      "suspicion": 10,
+      "note": "ティアリエルはテオラの率直さに寛容で、魔術の腕を信頼している。"
+    }
+  },
+  "inventory": {
+    "user": [],
+    "aria_claudewell": [
+      "長剣",
+      "盾",
+      "王国騎士の記録具",
+      "王国騎士証"
+    ],
+    "tiariel_alwen": [
+      "弓",
+      "矢筒",
+      "旅装備",
+      "簡易野営具"
+    ],
+    "theora": [
+      "魔術杖",
+      "魔導書",
+      "触媒袋",
+      "簡易インク壺",
+      "羊皮紙束"
+    ]
+  },
+  "flags": {
+    "quest_accepted": true,
+    "first_meeting_completed": false,
+    "party_formed": false,
+    "aria_supervising_party": true,
+    "tiariel_baptismal_names_explained": false,
+    "theora_commoner_status_revealed": false,
+    "status_guarantee_reward_known": true,
+    "goblin_abnormality_suspected": false,
+    "mana_anomaly_detected": false,
+    "northwest_pattern_suspected": false,
+    "northwest_cave_identified": false,
+    "goblin_lord_identified": false,
+    "goblin_lord_defeated": false,
+    "mana_pool_identified": false,
+    "mana_pool_resolved": false,
+    "reported_abnormal_goblins_to_kingdom": false,
+    "requested_kingdom_reinforcements": false,
+    "king_luminous_iii_involved": false,
+    "king_luminous_iii_joined_battle": false,
+    "king_luminous_iii_alive": true,
+    "king_luminous_iii_injured": false,
+    "gardian_empire_suspected": false,
+    "gardian_empire_involved": false
+  },
+  "quests": {
+    "goblin_crisis": {
+      "status": "in_progress",
+      "phase": "introduction",
+      "goblins_defeated": 0,
+      "nests_discovered": 0,
+      "nests_cleared": 0,
+      "lord_spawn_defeated": 0,
+      "shamans_defeated": 0,
+      "civilians_rescued": 0,
+      "civilian_casualties_known": 0,
+      "steps_completed": [
+        "quest_accepted"
+      ],
+      "steps_pending": [
+        "party_introduction",
+        "receive_first_assignment",
+        "investigate_goblin_activity"
+      ]
+    },
+    "mana_pool_resolution": {
+      "status": "not_started",
+      "phase": "unknown",
+      "steps_completed": [],
+      "steps_pending": []
+    }
+  },
+  "world": {
+    "trade_routes_secure": false,
+    "village_damage_level": 2,
+    "kingdom_alert_level": 2,
+    "gardian_empire_involved": false
+  },
+  "ending_conditions": {
+    "goblin_lord_defeated": false,
+    "king_luminous_iii_alive": true,
+    "mana_pool_resolved": false
+  }
+}
