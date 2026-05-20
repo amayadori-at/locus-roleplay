@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "scenario": "luminous_goblin_crisis",
+  "missing_image_behavior": "fallback_normal",
+  "marker_format": "[[image: {character_id}/{situation_id}.png]]",
+  "situations": [
+    {
+      "id": "normal",
+      "name": "通常",
+      "description": "通常立ち絵。初登場、通常会話、汎用描写で使用する。",
+      "fallback_allowed": false
+    },
+    {
+      "id": "smile",
+      "name": "微笑",
+      "description": "穏やかな表情、友好的な会話、軽い好印象の場面で使用する。",
+      "fallback_allowed": true
+    },
+    {
+      "id": "serious",
+      "name": "真剣",
+      "description": "重要判断、警告、任務説明、緊張感のある会話で使用する。",
+      "fallback_allowed": true
+    },
+    {
+      "id": "combat",
+      "name": "戦闘",
+      "description": "戦闘態勢、武器を構える場面、敵との交戦直前または交戦中に使用する。",
+      "fallback_allowed": true
+    },
+    {
+      "id": "angry",
+      "name": "怒り",
+      "description": "強い不快感、侮辱、規律違反、不正、民間人被害などに反応する場面で使用する。",
+      "fallback_allowed": true
+    },
+    {
+      "id": "sad",
+      "name": "悲しみ",
+      "description": "被害、喪失、命への哀悼、自然や村落の被害を受け止める場面で使用する。",
+      "fallback_allowed": true
+    },
+    {
+      "id": "surprised",
+      "name": "驚き",
+      "description": "予想外の発見、想定外の発言、魔素異常や上位個体の発見時などに使用する。",
+      "fallback_allowed": true
+    },
+    {
+      "id": "injured",
+      "name": "負傷",
+      "description": "負傷、消耗、戦闘後の損傷が明確な場面で使用する。",
+      "fallback_allowed": true
+    },
+    {
+      "id": "thinking",
+      "name": "思案",
+      "description": "調査、推理、判断保留、報告方針の検討、魔術的解析などで使用する。",
+      "fallback_allowed": true
+    }
+  ],
+  "character_situation_matrix": {
+    "aria_claudewell": [
+      "normal",
+      "serious",
+      "combat",
+      "angry",
+      "injured",
+      "thinking"
+    ],
+    "tiariel_alwen": [
+      "normal",
+      "smile",
+      "serious",
+      "combat",
+      "sad",
+      "thinking"
+    ],
+    "theora": [
+      "normal",
+      "smile",
+      "serious",
+      "combat",
+      "angry",
+      "surprised",
+      "thinking"
+    ]
+  }
+}

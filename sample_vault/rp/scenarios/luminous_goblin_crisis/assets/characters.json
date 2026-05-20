@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "scenario": "luminous_goblin_crisis",
+  "characters": [
+    {
+      "id": "aria_claudewell",
+      "name": "アリア・フォン・クロードウェル",
+      "short_name": "アリア",
+      "role": "王国騎士 / パーティ監督役 / 前衛防御役",
+      "default_situation": "normal",
+      "image_base_path": "assets/images/aria_claudewell",
+      "available_situations": [
+        "normal",
+        "serious",
+        "combat",
+        "angry",
+        "injured",
+        "thinking"
+      ],
+      "fallback": "normal",
+      "description": "厳格で高潔な印象を与える王国騎士。銀色の重厚なプレートアーマーを身にまとい、長剣と盾を携える。"
+    },
+    {
+      "id": "tiariel_alwen",
+      "name": "ティアリエル・ソル・ネア・アルウェン",
+      "short_name": "ティアリエル",
+      "role": "エルフ弓術士 / 斥候 / 後衛支援",
+      "default_situation": "normal",
+      "image_base_path": "assets/images/tiariel_alwen",
+      "available_situations": [
+        "normal",
+        "smile",
+        "serious",
+        "combat",
+        "sad",
+        "thinking"
+      ],
+      "fallback": "normal",
+      "description": "シルヴァレン自治連合に由来する女性エルフの弓術士。柔和で静かな観察力を持ち、弓と矢筒を携える。"
+    },
+    {
+      "id": "theora",
+      "name": "テオラ",
+      "short_name": "テオラ",
+      "role": "人間の女魔術師 / 後衛魔術火力 / 魔術知識支援",
+      "default_situation": "normal",
+      "image_base_path": "assets/images/theora",
+      "available_situations": [
+        "normal",
+        "smile",
+        "serious",
+        "combat",
+        "angry",
+        "surprised",
+        "thinking"
+      ],
+      "fallback": "normal",
+      "description": "姓を持たない平民出身の人間の女魔術師。大きなとんがり帽子、魔術杖、魔導書を携える。"
+    }
+  ]
+}

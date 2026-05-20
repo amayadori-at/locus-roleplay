@@ -1,0 +1,331 @@
+/* RAG status panel (Scenario Editor RAG tab) */
+.rag-status-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.rag-section {
+  background: #fff;
+  border: 1px solid #d8d0c0;
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rag-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.rag-section-header h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2725;
+}
+
+.rag-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.rag-dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.rag-dl dt {
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.rag-dl dd {
+  margin: 0;
+  color: #1f2725;
+  word-break: break-all;
+}
+
+.rag-dl dd.rag-warn {
+  color: #b45309;
+  font-weight: 600;
+}
+
+.rag-dl dd.rag-disabled {
+  color: #9ca3af;
+}
+
+.rag-message {
+  margin: 0;
+  font-size: 13px;
+  color: #1f2725;
+  padding: 6px 10px;
+  background: #f4f0e7;
+  border-radius: 4px;
+}
+
+@media (max-width: 860px) {
+  .source-tree {
+    position: static;
+    max-height: min(260px, 36vh);
+    overflow: hidden;
+  }
+
+  .source-tree .select-list {
+    overflow-y: auto;
+    overflow-x: visible;
+    min-height: auto;
+    padding-bottom: 0;
+  }
+
+  .editor-panel > .panel-header.compact {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .editor-panel > .panel-header.compact h3 {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .editor-panel > .panel-header.compact .segmented-control {
+    width: 100%;
+    overflow-x: auto;
+  }
+
+  .editor-panel > .panel-header.compact .segmented-control button {
+    flex: 1 0 auto;
+  }
+
+  .prompt-table {
+    overflow: visible;
+  }
+
+  .prompt-row {
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    align-items: stretch;
+  }
+
+  .prompt-row.heading {
+    display: none;
+  }
+
+  .prompt-row > label,
+  .prompt-row > span,
+  .prompt-row > select,
+  .prompt-row > input,
+  .prompt-row > .budget-pair {
+    display: grid;
+    grid-template-columns: 88px minmax(0, 1fr);
+    gap: 8px;
+    align-items: center;
+    min-width: 0;
+  }
+
+  .prompt-row > label::before,
+  .prompt-row > span::before,
+  .prompt-row > select::before,
+  .prompt-row > input::before,
+  .prompt-row > .budget-pair::before {
+    color: #65716d;
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
+
+  .prompt-row > :nth-child(1)::before { content: "order"; }
+  .prompt-row > :nth-child(2)::before { content: "node"; }
+  .prompt-row > :nth-child(3)::before { content: "type"; }
+  .prompt-row > :nth-child(4)::before { content: "source"; }
+  .prompt-row > :nth-child(5)::before { content: "role"; }
+  .prompt-row > :nth-child(6)::before { content: "required"; }
+  .prompt-row > :nth-child(7)::before { content: "budget"; }
+  .prompt-row > :nth-child(8)::before { content: "condition"; }
+  .prompt-row > :nth-child(9)::before { content: "move"; }
+
+  .prompt-row > .inline-check {
+    justify-content: start;
+  }
+
+  .prompt-row > label > .compact-input {
+    grid-column: 2;
+  }
+
+  .prompt-row > .inline-check input {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .prompt-row > .inline-check span {
+    grid-column: 2;
+    grid-row: 1;
+    margin-left: 26px;
+  }
+
+  .prompt-row > .budget-pair {
+    grid-template-columns: 88px minmax(0, 1fr);
+  }
+
+  .budget-pair input + input {
+    grid-column: 2;
+  }
+
+  .prompt-row > .row-actions {
+    justify-content: flex-start;
+  }
+
+  .prompt-preview-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .prompt-expansion-list li {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .visual-workspace {
+    grid-template-columns: 1fr;
+    min-height: auto;
+  }
+
+  .visual-canvas {
+    min-height: 340px;
+  }
+
+  .visual-canvas .svelte-flow {
+    min-height: 340px;
+  }
+
+  .visual-detail-panel {
+    max-height: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .prompt-graph-meta,
+  .prompt-editor-actions {
+    align-items: stretch;
+  }
+
+  .prompt-graph-meta span {
+    width: 100%;
+  }
+
+  .prompt-editor-actions button {
+    flex: 1 1 120px;
+    justify-content: center;
+  }
+
+  .prompt-row {
+    padding: 10px 8px;
+  }
+
+  .prompt-row > label,
+  .prompt-row > span,
+  .prompt-row > select,
+  .prompt-row > input,
+  .prompt-row > .budget-pair {
+    grid-template-columns: 76px minmax(0, 1fr);
+  }
+
+  .prompt-row > .budget-pair {
+    grid-template-columns: 76px minmax(0, 1fr);
+  }
+
+  .prompt-preview-panel .panel-header.compact {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .prompt-preview-panel .panel-header button {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .prompt-preview-json {
+    max-height: 48vh;
+  }
+
+  .modal-backdrop:has(.source-editor-modal) {
+    padding: 0;
+    align-items: stretch;
+    justify-items: stretch;
+  }
+
+  .modal-backdrop:has(.description-modal) {
+    padding: 0;
+    align-items: stretch;
+    justify-items: stretch;
+  }
+
+  .source-editor-modal {
+    width: 100%;
+    height: 100dvh;
+    max-height: none;
+    border-radius: 0;
+    padding: 12px;
+    overflow: hidden;
+  }
+
+  .description-modal {
+    width: 100%;
+    height: 100dvh;
+    max-height: none;
+    border-radius: 0;
+    padding: 12px;
+    overflow: hidden;
+  }
+
+  .source-editor-modal > .panel-header.compact {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .description-modal > .panel-header.compact {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .source-editor-modal-actions {
+    flex-wrap: wrap;
+  }
+
+  .source-editor-modal-actions button:not(.icon-button) {
+    flex: 1 1 160px;
+    justify-content: center;
+  }
+
+  .source-editor-modal-actions .icon-button {
+    flex: 0 0 auto;
+  }
+
+  .source-editor-modal .source-editor {
+    height: auto;
+  }
+
+  .visual-canvas {
+    min-height: 300px;
+  }
+
+  .visual-canvas .svelte-flow {
+    min-height: 300px;
+  }
+
+  .visual-detail-panel {
+    padding: 10px;
+  }
+}
