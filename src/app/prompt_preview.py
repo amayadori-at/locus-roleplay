@@ -6,7 +6,16 @@ from typing import Any
 from app.loaders import ModelProfile, Persona, Scenario, load_persona, load_profile, load_scenario
 from app.messages import is_conversation_role
 from app.prompt_graph import read_prompt_graph
-from app.rag import DEFAULT_RAG_TOKEN_BUDGET, budget_rag_results, build_rag_query, format_rag_results, load_scenario_file, retrieve_context
+from app.rag import (
+    DEFAULT_KEYWORD_TRIGGER_TOKEN_BUDGET,
+    DEFAULT_RAG_TOKEN_BUDGET,
+    budget_rag_results,
+    build_rag_query,
+    format_rag_results,
+    keyword_triggered_lore_results,
+    load_scenario_file,
+    retrieve_context,
+)
 from app.state_session import read_current_state, read_session_log, read_session_metadata, read_session_state
 from app.token_usage import estimate_prompt_token_usage
 from app.vault import Vault, VaultError
@@ -14,6 +23,9 @@ from app.vault import Vault, VaultError
 
 class PromptPreviewError(VaultError):
     """Raised when a prompt preview cannot be built."""
+
+
+RECENT_LOG_CONTEXT_SAFETY_MARGIN = 512
 
 
 def build_prompt_preview(
@@ -25,6 +37,8 @@ def build_prompt_preview(
     persona_id: str | None = None,
     profile_id: str | None = None,
     user_note: str = "",
+    session_note: str | None = None,
+    scene_note: str | None = None,
     recent_limit: int = 12,
     recent_log_override: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -36,6 +50,8 @@ def build_prompt_preview(
         persona_id=persona_id,
         profile_id=profile_id,
         user_note=user_note,
+        session_note=session_note,
+        scene_note=scene_note,
         recent_limit=recent_limit,
         recent_log_override=recent_log_override,
     )
@@ -50,6 +66,8 @@ def compose_prompt_graph(
     persona_id: str | None = None,
     profile_id: str | None = None,
     user_note: str = "",
+    session_note: str | None = None,
+    scene_note: str | None = None,
     recent_limit: int = 12,
     recent_log_override: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -61,7 +79,11 @@ def compose_prompt_graph(
         metadata = read_session_metadata(vault, scenario_id, session_id)
         persona_id = persona_id or _metadata_string(metadata, "persona_id")
         profile_id = profile_id or _metadata_string(metadata, "rp_profile_id")
-        user_note = user_note or _metadata_text(metadata, "user_note")
+        session_note = _resolved_session_note(metadata, session_note, user_note)
+        scene_note = scene_note if scene_note is not None else _metadata_text(metadata, "scene_note")
+    else:
+        session_note = user_note if session_note is None else session_note
+        scene_note = "" if scene_note is None else scene_note
 
     if not persona_id:
         raise PromptPreviewError("persona_id is required when session_id is not provided")
@@ -73,14 +95,78 @@ def compose_prompt_graph(
     profile = load_profile(vault, profile_id)
     state = read_session_state(vault, scenario_id, session_id) if session_id else read_current_state(vault, scenario_id)
     if recent_log_override is not None:
-        recent_log = recent_log_override
+        raw_recent_log = recent_log_override
     else:
-        recent_log = read_session_log(vault, scenario_id, session_id, limit=recent_limit) if session_id else []
+        raw_recent_log = read_session_log(vault, scenario_id, session_id) if session_id else []
     graph = read_prompt_graph(vault, scenario_id)
 
     active_mods: list[str] = _safe_string_list(metadata.get("active_mods"))
     pinned_characters: list[str] = _safe_string_list(metadata.get("pinned_characters"))
 
+    base_messages, _base_expansions = _compose_messages_from_graph(
+        vault,
+        graph=graph,
+        scenario=scenario,
+        persona=persona,
+        state=state,
+        recent_log=[],
+        session_note=session_note,
+        scene_note=scene_note,
+        user_message=user_message,
+        active_mods=active_mods,
+        pinned_characters=pinned_characters,
+    )
+    recent_log, recent_log_selection = _select_recent_log_for_context(
+        raw_recent_log,
+        profile.data,
+        base_messages=base_messages,
+        recent_limit=recent_limit,
+    )
+    messages, expansions = _compose_messages_from_graph(
+        vault,
+        graph=graph,
+        scenario=scenario,
+        persona=persona,
+        state=state,
+        recent_log=recent_log,
+        session_note=session_note,
+        scene_note=scene_note,
+        user_message=user_message,
+        active_mods=active_mods,
+        pinned_characters=pinned_characters,
+    )
+
+    token_usage = estimate_prompt_token_usage(messages, profile.data)
+    return {
+        "scenario_id": scenario_id,
+        "session_id": session_id,
+        "persona_id": persona.id,
+        "profile": _profile_summary(profile),
+        "graph": {"id": graph["id"], "version": graph["version"]},
+        "expansions": expansions,
+        "messages": messages,
+        "message_count": len(messages),
+        "character_count": sum(len(message.get("content", "")) for message in messages),
+        "token_usage": token_usage,
+        "recent_log_selection": recent_log_selection,
+        "selected_recent_log": recent_log,
+    }
+
+
+def _compose_messages_from_graph(
+    vault: Vault,
+    *,
+    graph: dict[str, Any],
+    scenario: Scenario,
+    persona: Persona,
+    state: dict[str, Any],
+    recent_log: list[dict[str, Any]],
+    session_note: str,
+    scene_note: str,
+    user_message: str,
+    active_mods: list[str],
+    pinned_characters: list[str],
+) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
     messages: list[dict[str, str]] = []
     system_sections: list[str] = []
     expansions: list[dict[str, Any]] = []
@@ -93,7 +179,8 @@ def compose_prompt_graph(
             persona=persona,
             state=state,
             recent_log=recent_log,
-            user_note=user_note,
+            session_note=session_note,
+            scene_note=scene_note,
             user_message=user_message,
             active_mods=active_mods,
             pinned_characters=pinned_characters,
@@ -119,18 +206,119 @@ def compose_prompt_graph(
     if system_sections:
         messages.insert(0, {"role": "system", "content": "\n\n".join(system_sections)})
 
+    return messages, expansions
+
+
+def _select_recent_log_for_context(
+    recent_log: list[dict[str, Any]],
+    profile_data: dict[str, Any],
+    *,
+    base_messages: list[dict[str, str]],
+    recent_limit: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    conversation_entries = [
+        entry
+        for entry in recent_log
+        if is_conversation_role(entry.get("role")) and isinstance(entry.get("content"), str) and entry.get("content")
+    ]
+    max_entries = recent_limit if isinstance(recent_limit, int) and not isinstance(recent_limit, bool) and recent_limit >= 0 else 12
+    if max_entries == 0 or not conversation_entries:
+        return [], _recent_log_selection_payload(
+            selected=[],
+            available_tokens=0,
+            considered_count=len(conversation_entries),
+            dropped_count=len(conversation_entries),
+            reason="recent_limit_zero" if max_entries == 0 else "empty_log",
+        )
+
+    capped_entries = conversation_entries[-max_entries:]
+    context_size = _optional_int(profile_data.get("context_size"))
+    if context_size is None:
+        return capped_entries, _recent_log_selection_payload(
+            selected=capped_entries,
+            available_tokens=None,
+            considered_count=len(capped_entries),
+            dropped_count=0,
+            reason="context_size_missing",
+        )
+
+    base_usage = estimate_prompt_token_usage(base_messages, profile_data)
+    reserved = _optional_int(profile_data.get("max_tokens")) or 0
+    available = context_size - reserved - int(base_usage.get("prompt_tokens", 0)) - RECENT_LOG_CONTEXT_SAFETY_MARGIN
+    if available <= 0:
+        return [], _recent_log_selection_payload(
+            selected=[],
+            available_tokens=max(0, available),
+            considered_count=len(capped_entries),
+            dropped_count=len(capped_entries),
+            reason="no_available_context",
+        )
+
+    selected_reversed: list[dict[str, Any]] = []
+    used = 0
+    for entry in reversed(capped_entries):
+        role = entry.get("role")
+        content = entry.get("content")
+        if not is_conversation_role(role) or not isinstance(content, str) or not content:
+            continue
+        usage = estimate_prompt_token_usage([{"role": role, "content": content}], {})["prompt_tokens"]
+        if selected_reversed and used + usage > available:
+            break
+        if not selected_reversed and usage > available:
+            break
+        selected_reversed.append(entry)
+        used += usage
+
+    selected = list(reversed(selected_reversed))
+    return selected, _recent_log_selection_payload(
+        selected=selected,
+        available_tokens=available,
+        considered_count=len(capped_entries),
+        dropped_count=len(capped_entries) - len(selected),
+        reason="token_budget",
+        selected_tokens=used,
+    )
+
+
+def _recent_log_selection_payload(
+    *,
+    selected: list[dict[str, Any]],
+    available_tokens: int | None,
+    considered_count: int,
+    dropped_count: int,
+    reason: str,
+    selected_tokens: int | None = None,
+) -> dict[str, Any]:
+    if selected_tokens is None:
+        selected_tokens = sum(
+            estimate_prompt_token_usage(
+                [
+                    {
+                        "role": str(entry.get("role") or ""),
+                        "content": str(entry.get("content") or ""),
+                    }
+                ],
+                {},
+            )["prompt_tokens"]
+            for entry in selected
+        )
     return {
-        "scenario_id": scenario_id,
-        "session_id": session_id,
-        "persona_id": persona.id,
-        "profile": _profile_summary(profile),
-        "graph": {"id": graph["id"], "version": graph["version"]},
-        "expansions": expansions,
-        "messages": messages,
-        "message_count": len(messages),
-        "character_count": sum(len(message.get("content", "")) for message in messages),
-        "token_usage": estimate_prompt_token_usage(messages, profile.data),
+        "strategy": "token_budget",
+        "reason": reason,
+        "available_tokens": available_tokens,
+        "selected_tokens": selected_tokens,
+        "selected_count": len(selected),
+        "considered_count": considered_count,
+        "dropped_count": max(0, dropped_count),
     }
+
+
+def _optional_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    return None
 
 
 def _expand_node(
@@ -141,7 +329,8 @@ def _expand_node(
     persona: Persona,
     state: dict[str, Any],
     recent_log: list[dict[str, Any]],
-    user_note: str,
+    session_note: str,
+    scene_note: str,
     user_message: str,
     active_mods: list[str] | None = None,
     pinned_characters: list[str] | None = None,
@@ -169,9 +358,13 @@ def _expand_node(
     elif node_type == "selected_persona":
         content = _persona_text(persona)
     elif node_type == "user_note":
-        content = user_note
+        content = session_note
         if not content.strip():
-            return {**base, "included": False, "skipped_reason": "empty_user_note"}
+            return {**base, "included": False, "skipped_reason": "empty_session_note"}
+    elif node_type == "scene_note":
+        content = scene_note
+        if not content.strip():
+            return {**base, "included": False, "skipped_reason": "empty_scene_note"}
     elif node_type == "state":
         content = json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True)
     elif node_type == "active_mods":
@@ -200,20 +393,37 @@ def _expand_node(
         sources = _node_sources(node)
         limit = _node_limit(node)
         token_budget = _node_token_budget(node)
+        keyword_results: list[dict[str, Any]] = []
+        keyword_warnings: list[str] = []
+        if "lore" in sources:
+            keyword_results, keyword_warnings = keyword_triggered_lore_results(
+                vault,
+                scenario.id,
+                user_message=user_message,
+                recent_log=recent_log,
+                exclude_paths=exclude_paths if exclude_paths else None,
+            )
+        keyword_paths = {result["source_path"] for result in keyword_results if isinstance(result.get("source_path"), str)}
         results = retrieve_context(
             vault,
             scenario_id=scenario.id,
             query=query,
             limit=limit,
             sources=sources,
-            exclude_paths=exclude_paths if exclude_paths else None,
+            exclude_paths=(exclude_paths | keyword_paths) if exclude_paths or keyword_paths else None,
+        )
+        keyword_budgeted_results = budget_rag_results(
+            keyword_results,
+            token_budget=_node_keyword_token_budget(node),
+            token_budgets={"lore": _node_keyword_token_budget(node)},
         )
         budgeted_results = budget_rag_results(
             results,
             token_budget=token_budget,
             token_budgets=_node_token_budgets(node),
         )
-        content = format_rag_results(budgeted_results)
+        combined_results = keyword_budgeted_results + budgeted_results
+        content = format_rag_results(combined_results)
         if not content:
             reason = "rag_budget_exhausted" if results else "no_rag_results"
             return {
@@ -221,12 +431,15 @@ def _expand_node(
                 "included": False,
                 "skipped_reason": reason,
                 "results": [],
+                "keyword_results": [],
+                "keyword_warnings": keyword_warnings,
                 "query": query,
                 "sources": sources,
                 "limit": limit,
                 "retrieved_count": len(results),
                 "included_count": 0,
                 "token_budget": token_budget,
+                "keyword_token_budget": _node_keyword_token_budget(node),
             }
         return {
             **base,
@@ -234,13 +447,16 @@ def _expand_node(
             "content_tokens": estimate_prompt_token_usage([{"role": role if role != "messages" else "user", "content": content}], {})[
                 "prompt_tokens"
             ],
-            "results": budgeted_results,
+            "results": combined_results,
+            "keyword_results": keyword_budgeted_results,
+            "keyword_warnings": keyword_warnings,
             "query": query,
             "sources": sources,
             "limit": limit,
             "retrieved_count": len(results),
-            "included_count": len(budgeted_results),
+            "included_count": len(combined_results),
             "token_budget": token_budget,
+            "keyword_token_budget": _node_keyword_token_budget(node),
         }
     elif node_type == "session_log":
         messages = [
@@ -362,6 +578,13 @@ def _node_token_budget(node: dict[str, Any]) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else DEFAULT_RAG_TOKEN_BUDGET
 
 
+def _node_keyword_token_budget(node: dict[str, Any]) -> int:
+    value = node.get("keyword_token_budget", DEFAULT_KEYWORD_TRIGGER_TOKEN_BUDGET)
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return DEFAULT_KEYWORD_TRIGGER_TOKEN_BUDGET
+
+
 def _node_token_budgets(node: dict[str, Any]) -> dict[str, int]:
     value = node.get("token_budgets")
     if not isinstance(value, dict):
@@ -389,6 +612,7 @@ def _node_title(node: dict[str, Any]) -> str:
         "active_mods": "Active Mods",
         "selected_persona": "User Persona",
         "user_note": "Session User Note",
+        "scene_note": "Scene Note",
         "current_state": "Current State",
         "pinned_characters": "Pinned Characters",
         "retrieved_lore_memory": "Relevant Lore / Memory",
@@ -435,3 +659,11 @@ def _metadata_string(metadata: dict[str, Any], field: str) -> str:
 def _metadata_text(metadata: dict[str, Any], field: str) -> str:
     value = metadata.get(field)
     return value if isinstance(value, str) else ""
+
+
+def _resolved_session_note(metadata: dict[str, Any], session_note: str | None, legacy_user_note: str = "") -> str:
+    if session_note is not None:
+        return session_note
+    if legacy_user_note:
+        return legacy_user_note
+    return _metadata_text(metadata, "session_note") or _metadata_text(metadata, "user_note")

@@ -40,8 +40,18 @@ from app.loaders import (
     load_starting,
 )
 from app.model_client import ModelClientError, OpenAICompatibleClient
+from app.postprocess_jobs import read_postprocess_job, start_postprocess_job
 from app.prompt_preview import build_prompt_preview
-from app.prompt_graph import prompt_graph_warnings, read_prompt_graph, write_prompt_graph
+from app.prompt_graph import (
+    has_start_prompt_graph,
+    prompt_graph_warnings,
+    read_prompt_graph,
+    read_start_prompt_graph,
+    write_prompt_graph,
+    write_start_prompt_graph,
+)
+from app.scenario_settings import ScenarioSettingsError, read_scenario_settings, write_scenario_settings
+from app.starts import StartError, create_start, delete_start, list_starts, read_start_manifest, resolve_initial_state_path, write_start_manifest
 from app.embedding import EmbeddingError, get_embedding_config
 from app.rag import (
     build_vector_index,
@@ -67,6 +77,7 @@ from app.state_session import (
     read_session_log,
     read_session_metadata,
     read_session_state,
+    read_session_state_snapshot,
     write_session_metadata,
     update_session_log_entry,
     delete_session_log_entry,
@@ -78,7 +89,6 @@ from app.turn_loop import (
     finalize_gm_turn,
     finalize_gm_turn_fast,
     prepare_gm_turn,
-    run_gm_post_turn,
     run_gm_turn,
 )
 from app.turn_payloads import segment_payload, turn_result_payload
@@ -252,6 +262,20 @@ def _handle_scenario_content_get(route: list[str], query: dict[str, list[str]], 
     if len(route) == 4 and route[:2] == ["api", "scenarios"] and route[3] == "prompt-graph":
         scenario_id = _validate_id(route[2], "scenario")
         return _json_response(_scenario_prompt_graph_response(vault, scenario_id))
+    if len(route) == 4 and route[:2] == ["api", "scenarios"] and route[3] == "settings":
+        scenario_id = _validate_id(route[2], "scenario")
+        return _json_response({"scenario_id": scenario_id, "settings": read_scenario_settings(vault, scenario_id)})
+    if len(route) == 4 and route[:2] == ["api", "scenarios"] and route[3] == "starts":
+        scenario_id = _validate_id(route[2], "scenario")
+        return _json_response(_scenario_starts_response(vault, scenario_id))
+    if len(route) == 6 and route[:2] == ["api", "scenarios"] and route[3] == "starts" and route[5] == "prompt-graph":
+        scenario_id = _validate_id(route[2], "scenario")
+        start_id = _validate_id(route[4], "start")
+        return _json_response(_start_prompt_graph_response(vault, scenario_id, start_id))
+    if len(route) == 6 and route[:2] == ["api", "scenarios"] and route[3] == "starts" and route[5] == "manifest":
+        scenario_id = _validate_id(route[2], "scenario")
+        start_id = _validate_id(route[4], "start")
+        return _json_response(_start_manifest_response(vault, scenario_id, start_id))
     if len(route) == 4 and route[:2] == ["api", "scenarios"] and route[3] == "prompt-preview":
         scenario_id = _validate_id(route[2], "scenario")
         return _json_response(_scenario_prompt_preview_response(vault, scenario_id, query))
@@ -319,6 +343,11 @@ def _handle_session_get(route: list[str], query: dict[str, list[str]], vault: Va
         session_id = _validate_id(route[4], "session")
         turn_id = _validate_id(route[6], "turn")
         return _json_response(_turn_job_response(vault, scenario_id, session_id, turn_id))
+    if len(route) == 7 and route[:2] == ["api", "scenarios"] and route[3] == "sessions" and route[5] == "postprocess":
+        scenario_id = _validate_id(route[2], "scenario")
+        session_id = _validate_id(route[4], "session")
+        job_id = _validate_id(route[6], "postprocess")
+        return _json_response(_postprocess_job_response(vault, scenario_id, session_id, job_id))
     return None
 
 
@@ -352,6 +381,9 @@ def _handle_scenario_content_post(
     if len(route) == 4 and route[:2] == ["api", "scenarios"] and route[3] == "source":
         scenario_id = _validate_id(route[2], "scenario")
         return _json_response(_create_scenario_source_file(vault, scenario_id, payload), status=201)
+    if len(route) == 4 and route[:2] == ["api", "scenarios"] and route[3] == "starts":
+        scenario_id = _validate_id(route[2], "scenario")
+        return _create_start_response(vault, scenario_id, payload)
     return None
 
 
@@ -410,6 +442,18 @@ def _handle_session_post(
             model_client=model_client,
             state_model_client=state_model_client,
         )
+    if len(route) == 8 and route[:2] == ["api", "scenarios"] and route[3] == "sessions" and route[5] == "messages" and route[7] == "continue":
+        scenario_id = _validate_id(route[2], "scenario")
+        session_id = _validate_id(route[4], "session")
+        turn = int(route[6])
+        return _continue_session_message_response(
+            vault,
+            scenario_id,
+            session_id,
+            turn,
+            payload,
+            model_client=model_client,
+        )
     return None
 
 
@@ -430,6 +474,21 @@ def _handle_scenario_content_put(route: list[str], vault: Vault, payload: dict[s
     if len(route) == 4 and route[:2] == ["api", "scenarios"] and route[3] == "prompt-graph":
         scenario_id = _validate_id(route[2], "scenario")
         return _update_scenario_prompt_graph_response(vault, scenario_id, payload)
+    if len(route) == 4 and route[:2] == ["api", "scenarios"] and route[3] == "settings":
+        scenario_id = _validate_id(route[2], "scenario")
+        try:
+            saved = write_scenario_settings(vault, scenario_id, payload)
+        except ScenarioSettingsError as exc:
+            return _error_response(400, str(exc))
+        return _json_response({"scenario_id": scenario_id, "settings": saved})
+    if len(route) == 6 and route[:2] == ["api", "scenarios"] and route[3] == "starts" and route[5] == "prompt-graph":
+        scenario_id = _validate_id(route[2], "scenario")
+        start_id = _validate_id(route[4], "start")
+        return _update_start_prompt_graph_response(vault, scenario_id, start_id, payload)
+    if len(route) == 6 and route[:2] == ["api", "scenarios"] and route[3] == "starts" and route[5] == "manifest":
+        scenario_id = _validate_id(route[2], "scenario")
+        start_id = _validate_id(route[4], "start")
+        return _update_start_manifest_response(vault, scenario_id, start_id, payload)
     return None
 
 
@@ -460,6 +519,14 @@ def _handle_scenario_content_delete(route: list[str], query: dict[str, list[str]
     if len(route) == 4 and route[:2] == ["api", "scenarios"] and route[3] == "source":
         scenario_id = _validate_id(route[2], "scenario")
         return _json_response(_delete_scenario_source_file(vault, scenario_id, query))
+    if len(route) == 5 and route[:2] == ["api", "scenarios"] and route[3] == "starts":
+        scenario_id = _validate_id(route[2], "scenario")
+        start_id = _validate_id(route[4], "start")
+        try:
+            delete_start(vault, scenario_id, start_id)
+        except StartError as exc:
+            return _error_response(404, str(exc))
+        return _json_response({"scenario_id": scenario_id, "start_id": start_id, "deleted": True})
     return None
 
 
@@ -732,6 +799,39 @@ def _scenario_source_file(vault: Vault, scenario_id: str, source_path: str) -> d
     return {"scenario_id": scenario_id, "path": safe_path, "content": content}
 
 
+def _scenario_starts_response(vault: Vault, scenario_id: str) -> dict[str, Any]:
+    load_scenario(vault, scenario_id)
+    starts = []
+    for info in list_starts(vault, scenario_id):
+        manifest = read_start_manifest(vault, scenario_id, info.id)
+        starts.append({
+            "id": info.id,
+            "name": info.name,
+            "body": info.body,
+            "has_manifest": info.has_manifest,
+            "lore_include": manifest.lore_include,
+            "lore_exclude": manifest.lore_exclude,
+            "initial_state_path": manifest.initial_state_path,
+        })
+    return {"scenario_id": scenario_id, "starts": starts}
+
+
+def _create_start_response(vault: Vault, scenario_id: str, payload: dict[str, Any]) -> ApiResponse:
+    load_scenario(vault, scenario_id)
+    start_id = _require_id(payload, "id")
+    name = payload.get("name", "")
+    if not isinstance(name, str) or not name.strip():
+        raise ApiBadRequest("name must be a non-empty string")
+    body = payload.get("body", "")
+    if not isinstance(body, str):
+        raise ApiBadRequest("body must be a string")
+    try:
+        info = create_start(vault, scenario_id, start_id, name.strip(), body)
+    except StartError as exc:
+        return _error_response(409, str(exc))
+    return _json_response({"scenario_id": scenario_id, "start": {"id": info.id, "name": info.name, "body": info.body}}, status=201)
+
+
 def _scenario_startings_response(vault: Vault, scenario_id: str) -> dict[str, Any]:
     load_scenario(vault, scenario_id)
     startings = []
@@ -838,6 +938,7 @@ def _update_scenario_source_file(vault: Vault, scenario_id: str, payload: dict[s
     content = payload.get("content")
     if not isinstance(content, str):
         raise ApiBadRequest("source content must be a string")
+    _validate_scenario_source_content(safe_path, content)
     path = vault.resolve(f"rp/scenarios/{scenario_id}/{safe_path}")
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(f".{path.name}.tmp")
@@ -856,6 +957,7 @@ def _create_scenario_source_file(vault: Vault, scenario_id: str, payload: dict[s
     content = payload.get("content")
     if not isinstance(content, str):
         raise ApiBadRequest("source content must be a string")
+    _validate_scenario_source_content(safe_path, content)
     path = vault.resolve(f"rp/scenarios/{scenario_id}/{safe_path}")
     if path.exists():
         raise ApiBadRequest("source file already exists")
@@ -870,13 +972,41 @@ def _create_scenario_source_file(vault: Vault, scenario_id: str, payload: dict[s
     return {"scenario_id": scenario_id, "path": safe_path, "content": content, "created": True}
 
 
+def _validate_scenario_source_content(safe_path: str, content: str) -> None:
+    parts = PurePosixPath(safe_path).parts
+    if len(parts) != 2 or parts[0] != "lore":
+        return
+    try:
+        document = parse_markdown(content)
+    except FrontmatterError as exc:
+        raise ApiBadRequest(f"Invalid lore frontmatter: {exc}") from exc
+    keywords = document.frontmatter.get("keywords")
+    if keywords is None:
+        return
+    if not isinstance(keywords, list):
+        raise ApiBadRequest("lore keywords must be a list")
+    for keyword in keywords:
+        if not isinstance(keyword, str):
+            raise ApiBadRequest("lore keywords must contain strings only")
+        if not keyword.strip():
+            raise ApiBadRequest("lore keywords must not contain empty strings")
+
+
 def _delete_scenario_source_file(vault: Vault, scenario_id: str, query: dict[str, list[str]]) -> dict[str, Any]:
     load_scenario(vault, scenario_id)
     safe_path = _validate_deletable_scenario_source_path(_query_string(query, "path"))
-    path = vault.resolve(f"rp/scenarios/{scenario_id}/{safe_path}")
-    if not path.is_file():
-        raise ApiBadRequest("source file does not exist")
-    path.unlink()
+    parts = safe_path.split("/")
+    if parts[0] == "startings" and len(parts) == 2:
+        start_id = parts[1].removesuffix(".md")
+        try:
+            delete_start(vault, scenario_id, start_id)
+        except StartError as exc:
+            raise ApiBadRequest(str(exc)) from exc
+    else:
+        path = vault.resolve(f"rp/scenarios/{scenario_id}/{safe_path}")
+        if not path.is_file():
+            raise ApiBadRequest("source file does not exist")
+        path.unlink()
     return {"scenario_id": scenario_id, "path": safe_path, "deleted": True}
 
 
@@ -906,12 +1036,100 @@ def _update_scenario_prompt_graph_response(vault: Vault, scenario_id: str, paylo
     )
 
 
+def _start_prompt_graph_response(vault: Vault, scenario_id: str, start_id: str) -> dict[str, Any]:
+    result = read_start_prompt_graph(vault, scenario_id, start_id)
+    graph = result["graph"]
+    return {
+        "scenario_id": scenario_id,
+        "start_id": start_id,
+        "own_graph": result["own_graph"],
+        "source": result["source"],
+        "graph": graph,
+        "warnings": prompt_graph_warnings(vault, scenario_id, graph),
+    }
+
+
+def _update_start_prompt_graph_response(vault: Vault, scenario_id: str, start_id: str, payload: dict[str, Any]) -> ApiResponse:
+    graph = payload.get("graph", payload)
+    if not isinstance(graph, dict):
+        raise ApiBadRequest("prompt graph payload must be a JSON object")
+    saved = write_start_prompt_graph(vault, scenario_id, start_id, graph)
+    return _json_response(
+        {
+            "scenario_id": scenario_id,
+            "start_id": start_id,
+            "own_graph": True,
+            "source": "start",
+            "graph": saved,
+            "warnings": prompt_graph_warnings(vault, scenario_id, saved),
+        }
+    )
+
+
+def _start_manifest_response(vault: Vault, scenario_id: str, start_id: str) -> dict[str, Any]:
+    try:
+        manifest = read_start_manifest(vault, scenario_id, start_id)
+    except StartError as exc:
+        raise ApiBadRequest(str(exc)) from exc
+    return {
+        "scenario_id": scenario_id,
+        "start_id": start_id,
+        "manifest": {
+            "name": manifest.name,
+            "description": manifest.description,
+            "lore_include": manifest.lore_include,
+            "lore_exclude": manifest.lore_exclude,
+            "initial_state_path": manifest.initial_state_path,
+        },
+    }
+
+
+def _update_start_manifest_response(vault: Vault, scenario_id: str, start_id: str, payload: dict[str, Any]) -> ApiResponse:
+    name = payload.get("name", "")
+    description = payload.get("description", "")
+    lore_include = payload.get("lore_include", [])
+    lore_exclude = payload.get("lore_exclude", [])
+    initial_state_path = payload.get("initial_state_path") or None
+
+    if not isinstance(lore_include, list):
+        raise ApiBadRequest("lore_include must be a list")
+    if not isinstance(lore_exclude, list):
+        raise ApiBadRequest("lore_exclude must be a list")
+
+    try:
+        manifest = write_start_manifest(
+            vault,
+            scenario_id,
+            start_id,
+            name=name,
+            description=description,
+            lore_include=lore_include,
+            lore_exclude=lore_exclude,
+            initial_state_path=initial_state_path,
+        )
+    except StartError as exc:
+        raise ApiBadRequest(str(exc)) from exc
+    return _json_response({
+        "scenario_id": scenario_id,
+        "start_id": start_id,
+        "manifest": {
+            "name": manifest.name,
+            "description": manifest.description,
+            "lore_include": manifest.lore_include,
+            "lore_exclude": manifest.lore_exclude,
+            "initial_state_path": manifest.initial_state_path,
+        },
+    })
+
+
 def _scenario_prompt_preview_response(vault: Vault, scenario_id: str, query: dict[str, list[str]]) -> dict[str, Any]:
     session_id = _optional_query_id(query, "session_id")
     persona_id = _optional_query_id(query, "persona_id")
     profile_id = _optional_query_id(query, "profile_id")
     user_message = _query_string(query, "user_message")
     user_note = _query_string(query, "user_note", required=False)
+    session_note = _query_string(query, "session_note", required=False) if "session_note" in query else None
+    scene_note = _query_string(query, "scene_note", required=False) if "scene_note" in query else None
     return build_prompt_preview(
         vault,
         scenario_id=scenario_id,
@@ -920,6 +1138,8 @@ def _scenario_prompt_preview_response(vault: Vault, scenario_id: str, query: dic
         profile_id=profile_id,
         user_message=user_message,
         user_note=user_note,
+        session_note=session_note,
+        scene_note=scene_note,
     )
 
 
@@ -1008,6 +1228,7 @@ def _scenario_rag_rebuild_response(vault: Vault, scenario_id: str) -> dict[str, 
             "version": index["version"],
             "document_count": index["document_count"],
             "indexed_at": index["indexed_at"],
+            "incremental": index.get("incremental", {}),
         },
     }
 
@@ -1145,6 +1366,7 @@ def _create_session_response(vault: Vault, payload: dict[str, Any]) -> ApiRespon
     rp_profile_id = _require_id(payload, "rp_profile_id")
     summary_profile_id = _optional_id(payload, "summary_profile_id")
     starting_id = _optional_id(payload, "starting_id")
+    start_id = _optional_id(payload, "start_id")
     session_id = _optional_id(payload, "session_id") or next_session_id(vault, scenario_id)
     display_name = payload.get("display_name")
     if display_name is not None and not isinstance(display_name, str):
@@ -1157,6 +1379,16 @@ def _create_session_response(vault: Vault, payload: dict[str, Any]) -> ApiRespon
         load_profile(vault, summary_profile_id)
     starting = load_starting(vault, scenario_id, starting_id) if starting_id is not None else None
 
+    initial_state_vault_path: str | None = None
+    if start_id is not None:
+        try:
+            manifest = read_start_manifest(vault, scenario_id, start_id)
+        except StartError as exc:
+            raise ApiBadRequest(str(exc)) from exc
+        settings = read_scenario_settings(vault, scenario_id)
+        if settings.get("prompt_graph_mode") == "per_start":
+            initial_state_vault_path = resolve_initial_state_path(scenario_id, start_id, manifest)
+
     metadata = create_session(
         vault,
         SessionMetadata(
@@ -1165,7 +1397,9 @@ def _create_session_response(vault: Vault, payload: dict[str, Any]) -> ApiRespon
             persona_id=persona_id,
             rp_profile_id=rp_profile_id,
             summary_profile_id=summary_profile_id,
+            start_id=start_id,
         ),
+        initial_state_vault_path=initial_state_vault_path,
     )
     if starting is not None:
         metadata["starting_id"] = starting.id
@@ -1180,7 +1414,7 @@ def _create_session_response(vault: Vault, payload: dict[str, Any]) -> ApiRespon
         )
     if display_name:
         metadata["display_name"] = display_name
-    if starting is not None or display_name:
+    if start_id is not None or starting is not None or display_name:
         write_session_metadata(vault, scenario_id, session_id, metadata)
     return _json_response({"session": metadata}, status=201)
 
@@ -1213,6 +1447,7 @@ def _create_branch_session_response(
         [entry["turn"] for entry in copied_entries if isinstance(entry.get("turn"), int)],
         default=0,
     )
+    state_snapshot_available = _session_state_snapshot_exists(vault, scenario_id, parent_session_id, branched_from_turn)
 
     metadata = create_session(
         vault,
@@ -1232,13 +1467,14 @@ def _create_branch_session_response(
         metadata["active_mods"] = parent_metadata["active_mods"]
     if "pinned_characters" in parent_metadata:
         metadata["pinned_characters"] = parent_metadata["pinned_characters"]
+    for note_key in ("user_note", "session_note", "scene_note"):
+        if note_key in parent_metadata:
+            metadata[note_key] = parent_metadata[note_key]
     copy_session_state_for_turn(vault, scenario_id, parent_session_id, child_session_id, branched_from_turn)
     metadata["state_copied"] = True
-    metadata["state_snapshot_available"] = True
-    metadata["state_snapshot_note"] = (
-        "Branch state was copied from the parent session snapshot for branched_from_turn. If that snapshot was missing, "
-        "the parent session current state fallback was used."
-    )
+    metadata["state_snapshot_available"] = state_snapshot_available
+    metadata["state_snapshot_source"] = "snapshot" if state_snapshot_available else "current_state_fallback"
+    metadata["state_snapshot_note"] = _branch_state_snapshot_note(state_snapshot_available)
     write_session_metadata(vault, scenario_id, child_session_id, metadata)
 
     for entry in copied_entries:
@@ -1276,6 +1512,12 @@ def _update_session_settings_response(
     user_note = payload.get("user_note")
     if user_note is not None and not isinstance(user_note, str):
         raise ApiBadRequest("user_note must be a string")
+    session_note = payload.get("session_note")
+    if session_note is not None and not isinstance(session_note, str):
+        raise ApiBadRequest("session_note must be a string")
+    scene_note = payload.get("scene_note")
+    if scene_note is not None and not isinstance(scene_note, str):
+        raise ApiBadRequest("scene_note must be a string")
     display_name = payload.get("display_name")
     if display_name is not None and not isinstance(display_name, str):
         raise ApiBadRequest("display_name must be a string")
@@ -1284,8 +1526,12 @@ def _update_session_settings_response(
         bookmarked_turns = _validate_bookmarked_turns(bookmarked_turns)
 
     updated = dict(metadata)
-    if user_note is not None:
-        updated["user_note"] = user_note
+    if session_note is not None:
+        updated["session_note"] = session_note
+    elif user_note is not None:
+        updated["session_note"] = user_note
+    if scene_note is not None:
+        updated["scene_note"] = scene_note
     if display_name is not None:
         updated["display_name"] = display_name
     if bookmarked_turns is not None:
@@ -1496,6 +1742,11 @@ def _turn_job_response(vault: Vault, scenario_id: str, session_id: str, turn_id:
     return {"turn_job": _public_turn_job(read_turn_job(vault, scenario_id, session_id, turn_id))}
 
 
+def _postprocess_job_response(vault: Vault, scenario_id: str, session_id: str, job_id: str) -> dict[str, Any]:
+    read_session_metadata(vault, scenario_id, session_id)
+    return {"postprocess_job": _public_postprocess_job(read_postprocess_job(vault, scenario_id, session_id, job_id))}
+
+
 def _public_turn_job(turn_job: dict[str, Any]) -> dict[str, Any]:
     payload = {
         "turn_id": turn_job.get("turn_id"),
@@ -1509,6 +1760,23 @@ def _public_turn_job(turn_job: dict[str, Any]) -> dict[str, Any]:
         "completed_at": turn_job.get("completed_at"),
         "error": turn_job.get("error"),
         "result": turn_job.get("result"),
+    }
+    return {key: value for key, value in payload.items() if value is not None}
+
+
+def _public_postprocess_job(job: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "job_id": job.get("job_id"),
+        "scenario_id": job.get("scenario_id"),
+        "session_id": job.get("session_id"),
+        "turn": job.get("turn"),
+        "status": job.get("status"),
+        "created_at": job.get("created_at"),
+        "updated_at": job.get("updated_at"),
+        "started_at": job.get("started_at"),
+        "completed_at": job.get("completed_at"),
+        "error": job.get("error"),
+        "result": job.get("result"),
     }
     return {key: value for key, value in payload.items() if value is not None}
 
@@ -1547,7 +1815,7 @@ def _turn_stream_response(
                 prepared=prepared,
             )
             yield _sse_event("final", {"turn": turn_result_payload(result)})
-            post = run_gm_post_turn(
+            postprocess_job = start_postprocess_job(
                 vault,
                 scenario_id=scenario_id,
                 session_id=session_id,
@@ -1556,7 +1824,7 @@ def _turn_stream_response(
                 prepared=prepared,
                 state_model_client=state_model_client,
             )
-            yield _sse_event("post_turn", post)
+            yield _sse_event("post_turn", {"postprocess_job": _public_postprocess_job(postprocess_job)})
         except Exception as exc:
             yield _sse_event("error", {"error": type(exc).__name__, "message": str(exc)})
 
@@ -1690,6 +1958,7 @@ def _session_timeline_response(vault: Vault, scenario_id: str, session_id: str) 
                 "timestamp": entry.get("timestamp"),
                 "bookmarked": turn in bookmarks,
                 "branches": branch_map.get(turn, []),
+                "state_snapshot_available": _session_state_snapshot_exists(vault, scenario_id, session_id, turn),
             }
         )
     return {"scenario_id": scenario_id, "session_id": session_id, "metadata": metadata, "timeline": timeline}
@@ -1709,9 +1978,29 @@ def _session_branches_by_turn(vault: Vault, scenario_id: str, session_id: str) -
                 "display_name": metadata.get("display_name", metadata.get("session_id")),
                 "turn_count": metadata.get("turn_count", 0),
                 "updated_at": metadata.get("updated_at"),
+                "state_snapshot_available": metadata.get("state_snapshot_available"),
+                "state_snapshot_source": metadata.get("state_snapshot_source"),
+                "state_snapshot_note": metadata.get("state_snapshot_note"),
             }
         )
     return branches
+
+
+def _session_state_snapshot_exists(vault: Vault, scenario_id: str, session_id: str, turn: int) -> bool:
+    try:
+        read_session_state_snapshot(vault, scenario_id, session_id, turn)
+    except VaultError:
+        return False
+    return True
+
+
+def _branch_state_snapshot_note(snapshot_available: bool) -> str:
+    if snapshot_available:
+        return "Branch state was copied from the parent session snapshot for branched_from_turn."
+    return (
+        "Parent state snapshot for branched_from_turn was missing. "
+        "Branch state was copied from the parent session current state fallback."
+    )
 
 
 def _metadata_bookmarked_turns(metadata: dict[str, Any]) -> set[int]:
@@ -1966,3 +2255,117 @@ def _regenerate_session_message_response(
             content_type="application/json; charset=utf-8",
             body=_on_success(result.content, getattr(result, "token_usage", {})),
         )
+
+
+def _continue_session_message_response(
+    vault: Vault,
+    scenario_id: str,
+    session_id: str,
+    turn: int,
+    payload: dict[str, Any],
+    *,
+    model_client: ChatCompletionClient | None = None,
+) -> ApiResponse | ApiStreamResponse:
+    if model_client is None:
+        model_client = OpenAICompatibleClient()
+
+    stream = payload.get("stream", False)
+    if not isinstance(stream, bool):
+        raise ApiBadRequest("stream must be a boolean")
+
+    entries = read_session_log(vault, scenario_id, session_id)
+    target_entry = None
+    latest_assistant_turn = None
+    for entry in entries:
+        if entry.get("role") != "assistant" or not isinstance(entry.get("turn"), int):
+            continue
+        latest_assistant_turn = entry["turn"] if latest_assistant_turn is None else max(latest_assistant_turn, entry["turn"])
+        if entry.get("turn") == turn:
+            target_entry = entry
+
+    if not target_entry:
+        raise ApiBadRequest("Assistant message not found for the specified turn")
+    if latest_assistant_turn != turn:
+        raise ApiBadRequest("Only the latest assistant message can be continued")
+
+    base_content = target_entry.get("content", "")
+    if not isinstance(base_content, str):
+        base_content = ""
+
+    recent_log_override = [
+        entry
+        for entry in entries
+        if isinstance(entry.get("turn"), int) and entry["turn"] <= turn
+    ]
+    continue_instruction = (
+        "Continue the immediately preceding assistant response from exactly where it stopped. "
+        "Do not repeat previous text. Do not add prefaces, labels, or summaries."
+    )
+
+    from app.turn_loop import prepare_gm_turn
+
+    prepared = prepare_gm_turn(
+        vault,
+        scenario_id=scenario_id,
+        session_id=session_id,
+        user_message=continue_instruction,
+        recent_limit=12,
+        recent_log_override=recent_log_override,
+    )
+
+    def _on_success(appended_content: str, token_usage: dict[str, int]) -> bytes:
+        new_content = base_content + appended_content
+        updates: dict[str, Any] = {
+            "content": new_content,
+            "segments": [
+                segment_payload(segment)
+                for segment in parse_image_markers(new_content, scenario=prepared.scenario, vault=vault)
+            ],
+        }
+        candidates = target_entry.get("candidates")
+        if isinstance(candidates, list) and candidates:
+            updated_candidates = list(candidates)
+            active_index = target_entry.get("active_candidate_index", 0)
+            if not isinstance(active_index, int) or active_index < 0 or active_index >= len(updated_candidates):
+                active_index = 0
+            updated_candidates[active_index] = new_content
+            updates["candidates"] = updated_candidates
+            updates["active_candidate_index"] = active_index
+        updated = update_session_log_entry(vault, scenario_id, session_id, turn, "assistant", updates)
+
+        return json.dumps(
+            {
+                "scenario_id": scenario_id,
+                "session_id": session_id,
+                "turn": turn,
+                "role": "assistant",
+                "appended_content": appended_content,
+                "entry": updated,
+                "token_usage": token_usage,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    if stream and hasattr(model_client, "create_chat_completion_stream"):
+        def _generate() -> Iterable[bytes]:
+            chunks: list[str] = []
+            try:
+                for chunk in model_client.create_chat_completion_stream(prepared.profile, prepared.messages):
+                    if not chunk:
+                        continue
+                    chunks.append(chunk)
+                    yield _sse_event("delta", {"delta": chunk})
+                appended_content = "".join(chunks)
+                yield _sse_event("final", json.loads(_on_success(appended_content, {})))
+            except Exception as exc:
+                yield _sse_event("error", {"error": type(exc).__name__, "message": str(exc)})
+
+        return ApiStreamResponse(status=200, content_type="text/event-stream; charset=utf-8", events=_generate())
+
+    result = model_client.create_chat_completion(prepared.profile, prepared.messages)
+    return ApiResponse(
+        status=200,
+        content_type="application/json; charset=utf-8",
+        body=_on_success(result.content, getattr(result, "token_usage", {})),
+    )

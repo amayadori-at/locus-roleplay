@@ -10,5 +10,15 @@ export default defineConfig({
     proxy: {
       "/api": backendUrl
     }
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules/@xyflow")) return "vendor-xyflow";
+          if (id.includes("node_modules")) return "vendor";
+        }
+      }
+    }
   }
 });

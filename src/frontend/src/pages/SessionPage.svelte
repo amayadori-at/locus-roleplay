@@ -25,6 +25,7 @@
     createSession,
     getScenarioRagStatus,
     getScenarioState,
+    getPostprocessJob,
     getSessionLog,
     getSessionPromptPreview,
     getSessionTimeline,
@@ -33,6 +34,7 @@
     listScenarioMemory,
     listScenarioCharacterBustups,
     listScenarioStartings,
+    listScenarioStarts,
     rebuildScenarioRagIndex,
     sendTurn,
     sendTurnStream,
@@ -42,6 +44,8 @@
     switchAssistantCandidate,
     regenerateTurn,
     regenerateTurnStream,
+    continueTurn,
+    continueTurnStream,
     getSessionPins,
     updateSessionPins,
     updateSessionStarting
@@ -67,6 +71,7 @@
   import { createSessionPickerStore } from "../lib/sessionPicker.js";
   import { createSessionPreferencesStore } from "../lib/sessionPreferences.js";
   import { displayMessageSegments } from "../lib/messageSegments.js";
+  import { t, translateNow } from "../lib/i18n.js";
   import { renderMarkdown } from "../lib/markdown.js";
   import PersonaProfilePickerModal from "../lib/PersonaProfilePickerModal.svelte";
   import TimelinePanel from "../lib/TimelinePanel.svelte";
@@ -135,7 +140,8 @@
   let logPagination = {};
   /** @type {"info" | "settings" | ""} */
   let sessionModal = "";
-  let userNoteDraft = "";
+  let sessionNoteDraft = "";
+  let sceneNoteDraft = "";
   let settingsSaving = false;
   let settingsMessage = "";
   /** @type {Record<string, any> | null} */
@@ -148,6 +154,11 @@
   let editMessageRole = "";
   let editDraft = "";
   let editSaving = false;
+  /** @type {number | null} */
+  let branchTurnDraft = null;
+  let branchNameDraft = "";
+  let branchSaving = false;
+  let branchError = "";
   /** @type {number | null} */
   let deletingTurn = null;
   let deletingRole = "";
@@ -171,8 +182,11 @@
   /** @type {Array<Record<string, any>>} */
   let startings = [];
   /** @type {Array<Record<string, any>>} */
+  let starts = [];
+  /** @type {Array<Record<string, any>>} */
   let characterBustups = [];
   let selectedStartingId = "";
+  let selectedStartId = "";
   let switchingStarting = false;
   let newMessageBadge = false;
   let loadedKey = "";
@@ -182,12 +196,15 @@
   const layout = createSessionLayoutStore();
   const pickerState = createSessionPickerStore();
   const preferences = createSessionPreferencesStore();
+  const BRANCH_EDIT_PRESET_PREFIX = "locus-rp:branch-edit-preset:";
   /** @type {HTMLTextAreaElement | null} */
   let composer = null;
   /** @type {HTMLElement | null} */
   let chatLogElement = null;
   /** @type {AbortController | null} */
   let turnAbortController = null;
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let postprocessPollTimer = null;
 
   $: selectedMemoryItem = activeMemoryItem();
   $: showSessionSide = !isMobile || Boolean(currentSessionId);
@@ -242,7 +259,7 @@
       messages = payload.log || [];
       logPagination = payload.pagination || {};
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : "ログを読み込めませんでした。";
+      error = caught instanceof Error ? caught.message : translateNow("session.loadLogError");
     } finally {
       loadingOlderLog = false;
     }
@@ -274,33 +291,63 @@
   }
 
   /** @param {number} turn */
+  function openBranchDialog(turn) {
+    if (!route.scenarioId || !currentSessionId || sending) {
+      return;
+    }
+    branchTurnDraft = turn;
+    branchNameDraft = defaultBranchName(turn);
+    branchError = branchSnapshotAvailable(turn)
+      ? ""
+      : translateNow("session.noSnapshot");
+  }
+
+  function closeBranchDialog() {
+    if (branchSaving) return;
+    branchTurnDraft = null;
+    branchNameDraft = "";
+    branchError = "";
+  }
+
+  /** @param {number} turn */
+  function defaultBranchName(turn) {
+    return translateNow("session.branchName", { name: sessionMetadata.display_name || currentSessionId, turn });
+  }
+
+  /** @param {number} turn */
+  function branchSnapshotAvailable(turn) {
+    const item = timeline.find((entry) => entry.turn === turn);
+    return item?.state_snapshot_available === true;
+  }
+
+  /** @param {number} turn */
   async function handleBranchFromTurn(turn) {
     if (!route.scenarioId || !currentSessionId || sending) {
       return;
     }
-    const confirmed = confirm(
-      `Turn ${turn} の時点から分岐セッションを作成します。\n` +
-      `State snapshot が保存済みの場合はその時点の State が使われます。\n` +
-      `未保存の場合は現在の session state が引き継がれます。\n\n` +
-      `続行しますか？`
-    );
-    if (!confirmed) return;
-    loading = true;
+    const displayName = branchNameDraft.trim() || defaultBranchName(turn);
+    branchSaving = true;
+    branchError = "";
     error = "";
     try {
       const payload = await createBranchSession(route.scenarioId, currentSessionId, {
         branched_from_turn: turn,
-        display_name: `${sessionMetadata.display_name || currentSessionId} / Turn ${turn} 分岐`
+        display_name: displayName
       });
       const sessionId = payload.session?.session_id;
       if (!sessionId) {
-        throw new Error("Backend API が branch session_id を返しませんでした。");
+        throw new Error(translateNow("session.backendBranchError"));
       }
+      if (payload.session?.state_snapshot_available === false) {
+        turnNotice = translateNow("session.branchStateFallback");
+      }
+      branchTurnDraft = null;
+      branchNameDraft = "";
       onNavigate.openSession(route.scenarioId, sessionId);
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : "分岐セッションを作成できませんでした。";
+      branchError = caught instanceof Error ? caught.message : translateNow("session.branchCreateError");
     } finally {
-      loading = false;
+      branchSaving = false;
     }
   }
 
@@ -323,7 +370,7 @@
       sessionMetadata = payload.session || sessionMetadata;
       await loadTimeline(route.scenarioId, currentSessionId);
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : "Bookmarkを保存できませんでした。";
+      error = caught instanceof Error ? caught.message : translateNow("session.bookmarkSaveError");
       await loadTimeline(route.scenarioId, currentSessionId);
     }
   }
@@ -356,13 +403,15 @@
     activeMemoryPath = "";
     ragRebuildMessage = "";
     startings = [];
+    starts = [];
     characterBustups = [];
     selectedStartingId = "";
+    selectedStartId = "";
     switchingStarting = false;
     currentSessionId = route.sessionId || "";
 
     if (!route.scenarioId) {
-      error = "scenario が指定されていません。";
+      error = translateNow("session.noScenario");
       return;
     }
 
@@ -379,8 +428,9 @@
         loadTimeline(route.scenarioId, currentSessionId),
         loadState(route.scenarioId, currentSessionId)
       ]);
+      applyBranchEditPreset(route.scenarioId, currentSessionId);
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : "セッションを読み込めませんでした。";
+      error = caught instanceof Error ? caught.message : translateNow("session.loadSessionError");
     } finally {
       loading = false;
       if (currentSessionId && (sessionMetadata.turn_count ?? 0) > 0) {
@@ -390,29 +440,32 @@
   }
 
   async function loadChoices() {
-    const [personaPayload, profilePayload, startingPayload, bustupPayload] = await Promise.all([
+    const [personaPayload, profilePayload, startingPayload, bustupPayload, startsPayload] = await Promise.all([
       listPersonas(),
       listProfiles(),
       route.scenarioId ? listScenarioStartings(route.scenarioId) : Promise.resolve({ startings: [] }),
-      route.scenarioId ? listScenarioCharacterBustups(route.scenarioId) : Promise.resolve({ characters: [] })
+      route.scenarioId ? listScenarioCharacterBustups(route.scenarioId) : Promise.resolve({ characters: [] }),
+      route.scenarioId ? listScenarioStarts(route.scenarioId) : Promise.resolve({ starts: [] })
     ]);
     selection.setChoices(personaPayload.personas || [], profilePayload.profiles || []);
     startings = startingPayload.startings || [];
     characterBustups = bustupPayload.characters || [];
+    starts = startsPayload.starts || [];
     selectedStartingId = startings[0]?.id || "";
+    selectedStartId = starts[0]?.id || "";
   }
 
   async function createSelectedSession() {
     if (!route.scenarioId) {
-      error = "scenario が指定されていません。";
+      error = translateNow("session.noScenario");
       return;
     }
     if (!$selection.selectedPersona || $selection.selectedPersona === EMPTY_SELECTION) {
-      error = "Persona を選択してください。";
+      error = translateNow("session.noPersona");
       return;
     }
     if (!$selection.selectedRpProfile || $selection.selectedRpProfile === EMPTY_SELECTION) {
-      error = "GM profile を選択してください。";
+      error = translateNow("session.noProfile");
       return;
     }
 
@@ -424,15 +477,16 @@
         persona_id: $selection.selectedPersona,
         rp_profile_id: $selection.selectedRpProfile,
         summary_profile_id: $selection.selectedStateProfile === EMPTY_SELECTION ? null : $selection.selectedStateProfile,
-        starting_id: selectedStartingId || null
+        starting_id: selectedStartingId || null,
+        start_id: selectedStartId || null
       });
       const sessionId = payload.session?.session_id;
       if (!sessionId) {
-        throw new Error("Backend API が session_id を返しませんでした。");
+        throw new Error(translateNow("session.backendSessionError"));
       }
       onNavigate.openSession(route.scenarioId, sessionId);
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : "新規セッションを作成できませんでした。";
+      error = caught instanceof Error ? caught.message : translateNow("session.createSessionError");
     } finally {
       loading = false;
     }
@@ -447,7 +501,8 @@
     messages = payload.log || [];
     logPagination = payload.pagination || {};
     sessionMetadata = payload.metadata || {};
-    userNoteDraft = typeof sessionMetadata.user_note === "string" ? sessionMetadata.user_note : "";
+    sessionNoteDraft = metadataSessionNote(sessionMetadata);
+    sceneNoteDraft = typeof sessionMetadata.scene_note === "string" ? sessionMetadata.scene_note : "";
     selection.applyMetadata(payload.metadata || {});
   }
 
@@ -470,7 +525,7 @@
         chatLogElement.scrollTop = chatLogElement.scrollHeight - previousHeight;
       }
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : "過去ログを読み込めませんでした。";
+      error = caught instanceof Error ? caught.message : translateNow("session.loadOlderError");
     } finally {
       loadingOlderLog = false;
     }
@@ -546,10 +601,8 @@
               sending = false;
             }
           },
-          onPostTurn: () => {
-            stateUpdating = false;
-            void loadState(scenarioId, sessionId);
-            void loadTimeline(scenarioId, sessionId);
+          onPostTurn: (data) => {
+            void handlePostTurnResult(scenarioId, sessionId, data);
           }
         });
       } else {
@@ -559,6 +612,7 @@
         });
         const turn = payload.turn;
         messages = finalizeTurnMessages(messages, userMessage, turn, false);
+        turnNotice = formatPostTurnNotice(turn);
         await Promise.all([loadState(scenarioId, sessionId), loadTimeline(scenarioId, sessionId)]);
         if (sessionModal === "settings") {
           await Promise.all([loadPromptPreview(scenarioId, sessionId), loadRagStatus(scenarioId)]);
@@ -570,23 +624,106 @@
         if (!streamFinalReceived && controller.signal.reason === "user") {
           messages = removePendingTurnMessages(messages, userMessage);
           input = userMessage;
-          turnNotice = "応答生成を停止しました。入力は復元されています。";
+          turnNotice = translateNow("session.stopNotice");
         }
       } else {
-        error = caught instanceof Error ? caught.message : "ターン送信に失敗しました。";
+        error = caught instanceof Error ? caught.message : translateNow("session.sendError");
       }
     } finally {
       if (turnAbortController === controller) {
         turnAbortController = null;
         sending = false;
       }
-      stateUpdating = false;
+      if (!useStream) {
+        stateUpdating = false;
+      }
     }
   }
 
   /** @param {string} delta */
   function appendStreamingDelta(delta) {
     messages = appendStreamingDeltaToMessages(messages, delta);
+  }
+
+  /**
+   * @param {string} scenarioId
+   * @param {string} sessionId
+   * @param {Record<string, any>} data
+   */
+  async function handlePostTurnResult(scenarioId, sessionId, data) {
+    const job = data?.postprocess_job;
+    if (job && typeof job.job_id === "string") {
+      await pollPostprocessJob(scenarioId, sessionId, job.job_id);
+      return;
+    }
+    turnNotice = formatPostTurnNotice(data);
+    stateUpdating = false;
+    await Promise.all([loadState(scenarioId, sessionId), loadTimeline(scenarioId, sessionId)]);
+  }
+
+  /**
+   * @param {string} scenarioId
+   * @param {string} sessionId
+   * @param {string} jobId
+   */
+  async function pollPostprocessJob(scenarioId, sessionId, jobId) {
+    clearPostprocessPollTimer();
+    stateUpdating = true;
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      try {
+        const payload = await getPostprocessJob(scenarioId, sessionId, jobId);
+        const job = payload.postprocess_job || {};
+        if (job.status === "completed") {
+          turnNotice = formatPostTurnNotice(job.result);
+          stateUpdating = false;
+          await Promise.all([loadState(scenarioId, sessionId), loadTimeline(scenarioId, sessionId)]);
+          return;
+        }
+        if (job.status === "failed") {
+          const message = job.error?.message ? String(job.error.message) : translateNow("session.postprocessError");
+          turnNotice = translateNow("session.postprocessFailed", { message });
+          stateUpdating = false;
+          return;
+        }
+      } catch (caught) {
+        turnNotice = caught instanceof Error ? caught.message : translateNow("session.postprocessCheckError");
+        stateUpdating = false;
+        return;
+      }
+      await waitForPostprocessPoll(1000);
+    }
+    turnNotice = translateNow("session.postprocessPending");
+    stateUpdating = false;
+  }
+
+  /** @param {number} delayMs */
+  function waitForPostprocessPoll(delayMs) {
+    return new Promise((resolve) => {
+      postprocessPollTimer = setTimeout(() => {
+        postprocessPollTimer = null;
+        resolve(undefined);
+      }, delayMs);
+    });
+  }
+
+  function clearPostprocessPollTimer() {
+    if (postprocessPollTimer) {
+      clearTimeout(postprocessPollTimer);
+      postprocessPollTimer = null;
+    }
+  }
+
+  /** @param {Record<string, any> | null | undefined} result */
+  function formatPostTurnNotice(result) {
+    if (!result || typeof result !== "object") return "";
+    const warnings = [];
+    if (typeof result.state_update_error === "string" && result.state_update_error) {
+      warnings.push(translateNow("session.stateUpdateError"));
+    }
+    if (typeof result.memory_update_error === "string" && result.memory_update_error) {
+      warnings.push(translateNow("session.memoryUpdateError"));
+    }
+    return warnings.join(" ");
   }
 
   /** @param {string} reason */
@@ -608,6 +745,7 @@
 
   onDestroy(() => {
     abortPendingTurn("destroy");
+    clearPostprocessPollTimer();
   });
 
   /** @param {Record<string, any>} message */
@@ -633,24 +771,68 @@
     if (!route.scenarioId || !currentSessionId || editSaving) return;
     editSaving = true;
     try {
+      if (shouldBranchFromEditedUserMessage(message)) {
+        const turn = /** @type {number} */ (message.turn);
+        const payload = await createBranchSession(route.scenarioId, currentSessionId, {
+          branched_from_turn: turn - 1,
+          display_name: translateNow("session.editBranchName", { name: sessionMetadata.display_name || currentSessionId, turn })
+        });
+        const sessionId = payload.session?.session_id;
+        if (!sessionId) {
+          throw new Error(translateNow("session.backendBranchError"));
+        }
+        setBranchEditPreset(route.scenarioId, sessionId, editDraft.trim());
+        cancelEditing();
+        onNavigate.openSession(route.scenarioId, sessionId);
+        return;
+      }
       await updateSessionMessage(route.scenarioId, currentSessionId, message.turn, message.role, editDraft);
       editMessageTurn = null;
       editMessageRole = "";
       await reloadSession(route.scenarioId, currentSessionId);
     } catch (err) {
-      alert("編集の保存に失敗しました: " + (err instanceof Error ? err.message : String(err)));
+      alert(translateNow("session.editSaveError", { message: err instanceof Error ? err.message : String(err) }));
     } finally {
       editSaving = false;
     }
   }
 
   /** @param {Record<string, any>} message */
+  function shouldBranchFromEditedUserMessage(message) {
+    return message?.role === "user" && Number.isInteger(message.turn) && message.turn >= 1;
+  }
+
+  /**
+   * @param {string} scenarioId
+   * @param {string} sessionId
+   * @param {string} content
+   */
+  function setBranchEditPreset(scenarioId, sessionId, content) {
+    if (!content) return;
+    sessionStorage.setItem(`${BRANCH_EDIT_PRESET_PREFIX}${scenarioId}:${sessionId}`, content);
+  }
+
+  /**
+   * @param {string} scenarioId
+   * @param {string} sessionId
+   */
+  function applyBranchEditPreset(scenarioId, sessionId) {
+    const key = `${BRANCH_EDIT_PRESET_PREFIX}${scenarioId}:${sessionId}`;
+    const preset = sessionStorage.getItem(key);
+    if (!preset) return;
+    sessionStorage.removeItem(key);
+    input = preset;
+    turnNotice = translateNow("session.editBranchNotice");
+    tick().then(() => composer?.focus());
+  }
+
+  /** @param {Record<string, any>} message */
   async function handleDeleteMessage(message) {
     if (!route.scenarioId || !currentSessionId || !message || message.turn == null) return;
-    const doDelete = window.confirm(`ターン ${message.turn} の ${message.role === 'assistant' ? 'GM応答' : 'ユーザー発言'} を削除します。\nよろしいですか？`);
+    const doDelete = window.confirm(translateNow("session.deleteConfirm", { turn: message.turn, role: message.role === "assistant" ? translateNow("session.gmResponse") : translateNow("session.userMessage") }));
     if (!doDelete) return;
 
-    const doRewind = window.confirm(`このメッセージ以降のすべてのメッセージも削除しますか？\n\n[OK] 以降をすべて削除\n[キャンセル] このメッセージのみ削除`);
+    const doRewind = window.confirm(translateNow("session.deleteRewindConfirm"));
 
     deletingTurn = message.turn;
     deletingRole = message.role;
@@ -658,7 +840,7 @@
       await deleteSessionMessage(route.scenarioId, currentSessionId, message.turn, message.role, doRewind);
       await reloadSession(route.scenarioId, currentSessionId, { timeline: true });
     } catch (err) {
-      alert("削除に失敗しました: " + (err instanceof Error ? err.message : String(err)));
+      alert(translateNow("session.deleteError", { message: err instanceof Error ? err.message : String(err) }));
     } finally {
       deletingTurn = null;
       deletingRole = "";
@@ -678,14 +860,14 @@
       await switchAssistantCandidate(route.scenarioId, currentSessionId, message.turn, activeIndex);
       await loadLog(route.scenarioId, currentSessionId);
     } catch (err) {
-      alert("候補の切り替えに失敗しました: " + (err instanceof Error ? err.message : String(err)));
+      alert(translateNow("session.switchError", { message: err instanceof Error ? err.message : String(err) }));
     }
   }
 
   /** @param {Record<string, any>} message */
   async function handleRegenerate(message) {
     if (!route.scenarioId || !currentSessionId || !message || message.turn == null || sending) return;
-    const doRegenerate = window.confirm(`ターン ${message.turn} のGM応答を再生成しますか？`);
+    const doRegenerate = window.confirm(translateNow("session.regenerateConfirm", { turn: message.turn }));
     if (!doRegenerate) return;
 
     sending = true;
@@ -713,9 +895,53 @@
       }
     } catch (err) {
       if (!isAbortError(err)) {
-        error = err instanceof Error ? err.message : "再生成に失敗しました。";
+        error = err instanceof Error ? err.message : translateNow("session.regenerateError");
       } else {
-        turnNotice = "再生成を中断しました。";
+        turnNotice = translateNow("session.regenerateAborted");
+      }
+    } finally {
+      sending = false;
+      turnAbortController = null;
+      await reloadSession(route.scenarioId, currentSessionId, { timeline: true });
+      if (!$preferences.streamEnabled) {
+        newMessageBadge = true;
+      }
+    }
+  }
+
+  /** @param {Record<string, any>} message */
+  async function handleContinue(message) {
+    if (!route.scenarioId || !currentSessionId || !message || message.turn == null || sending) return;
+
+    sending = true;
+    error = "";
+    turnNotice = "";
+
+    turnAbortController = new AbortController();
+
+    try {
+      if ($preferences.streamEnabled) {
+        const baseContent = typeof message.content === "string" ? message.content : "";
+        let appendedContent = "";
+
+        await continueTurnStream(route.scenarioId, currentSessionId, message.turn, {
+          signal: turnAbortController.signal,
+          onDelta: (delta) => {
+            appendedContent += delta;
+            messages = updateRegeneratingAssistantMessage(messages, message.turn, baseContent + appendedContent);
+            tick().then(scrollToBottom);
+          }
+        });
+      } else {
+        await continueTurn(route.scenarioId, currentSessionId, message.turn, {
+          signal: turnAbortController.signal
+        });
+      }
+    } catch (err) {
+      if (!isAbortError(err)) {
+        error = err instanceof Error ? err.message : translateNow("session.continueError");
+      } else {
+        turnNotice = translateNow("session.continueAborted");
       }
     } finally {
       sending = false;
@@ -785,13 +1011,21 @@
     return JSON.stringify(state || {}, null, 2);
   }
 
+  /** @param {Record<string, any> | null | undefined} metadata */
+  function metadataSessionNote(metadata) {
+    if (typeof metadata?.session_note === "string") return metadata.session_note;
+    if (typeof metadata?.user_note === "string") return metadata.user_note;
+    return "";
+  }
+
   function openSessionInfo() {
     sessionModal = "info";
     settingsMessage = "";
   }
 
   function openSessionSettings() {
-    userNoteDraft = typeof sessionMetadata.user_note === "string" ? sessionMetadata.user_note : "";
+    sessionNoteDraft = metadataSessionNote(sessionMetadata);
+    sceneNoteDraft = typeof sessionMetadata.scene_note === "string" ? sessionMetadata.scene_note : "";
     sessionModal = "settings";
     settingsMessage = "";
     if (route.scenarioId && currentSessionId) {
@@ -825,7 +1059,7 @@
       pinsData = result;
       sessionMetadata = { ...sessionMetadata, active_mods: result.active_mods };
     } catch (caught) {
-      pinsMessage = caught instanceof Error ? caught.message : "保存できませんでした。";
+      pinsMessage = caught instanceof Error ? caught.message : translateNow("session.saveError");
     } finally {
       pinsSaving = false;
     }
@@ -842,7 +1076,7 @@
       pinsData = result;
       sessionMetadata = { ...sessionMetadata, pinned_characters: result.pinned_characters };
     } catch (caught) {
-      pinsMessage = caught instanceof Error ? caught.message : "保存できませんでした。";
+      pinsMessage = caught instanceof Error ? caught.message : translateNow("session.saveError");
     } finally {
       pinsSaving = false;
     }
@@ -861,13 +1095,15 @@
     settingsMessage = "";
     try {
       const payload = await updateSessionSettings(route.scenarioId, currentSessionId, {
-        user_note: userNoteDraft
+        session_note: sessionNoteDraft,
+        scene_note: sceneNoteDraft
       });
       sessionMetadata = payload.session || {};
-      userNoteDraft = typeof sessionMetadata.user_note === "string" ? sessionMetadata.user_note : "";
-      settingsMessage = "保存しました。";
+      sessionNoteDraft = metadataSessionNote(sessionMetadata);
+      sceneNoteDraft = typeof sessionMetadata.scene_note === "string" ? sessionMetadata.scene_note : "";
+      settingsMessage = translateNow("session.saved");
     } catch (caught) {
-      settingsMessage = caught instanceof Error ? caught.message : "設定を保存できませんでした。";
+      settingsMessage = caught instanceof Error ? caught.message : translateNow("session.settingsSaveError");
     } finally {
       settingsSaving = false;
     }
@@ -883,7 +1119,7 @@
     try {
       promptPreview = await getSessionPromptPreview(scenarioId, sessionId);
     } catch (caught) {
-      promptPreviewError = caught instanceof Error ? caught.message : "Prompt Preview を読み込めませんでした。";
+      promptPreviewError = caught instanceof Error ? caught.message : translateNow("session.promptPreviewError");
       promptPreview = null;
     } finally {
       promptPreviewLoading = false;
@@ -897,7 +1133,7 @@
     try {
       ragStatus = await getScenarioRagStatus(scenarioId);
     } catch (caught) {
-      ragStatusError = caught instanceof Error ? caught.message : "RAG status を読み込めませんでした。";
+      ragStatusError = caught instanceof Error ? caught.message : translateNow("session.ragStatusError");
       ragStatus = null;
     } finally {
       ragStatusLoading = false;
@@ -912,7 +1148,7 @@
       memoryList = await listScenarioMemory(scenarioId);
       activeMemoryPath = firstMemoryItem()?.path || "";
     } catch (caught) {
-      memoryError = caught instanceof Error ? caught.message : "Memory一覧を読み込めませんでした。";
+      memoryError = caught instanceof Error ? caught.message : translateNow("session.memoryListError");
       memoryList = null;
       activeMemoryPath = "";
     } finally {
@@ -929,11 +1165,11 @@
     ragStatusError = "";
     try {
       const payload = await rebuildScenarioRagIndex(route.scenarioId);
-      ragRebuildMessage = `再構築しました: ${payload.index?.document_count ?? 0} files`;
+      ragRebuildMessage = translateNow("session.ragRebuildDone", { count: payload.index?.document_count ?? 0 });
       await loadRagStatus(route.scenarioId);
       await loadMemoryList(route.scenarioId);
     } catch (caught) {
-      ragStatusError = caught instanceof Error ? caught.message : "RAG index を再構築できませんでした。";
+      ragStatusError = caught instanceof Error ? caught.message : translateNow("session.ragRebuildError");
     } finally {
       ragRebuildRunning = false;
     }
@@ -976,8 +1212,35 @@
     return Object.keys(state || {}).slice(0, 10);
   }
 
+  /** @param {string} sessionId */
+  async function copyBranchSessionId(sessionId) {
+    try {
+      await navigator.clipboard?.writeText(sessionId);
+      turnNotice = translateNow("session.sessionIdCopied", { sessionId });
+    } catch {
+      turnNotice = `Session ID: ${sessionId}`;
+    }
+  }
+
+  /** @param {Record<string, any>} branch */
+  async function renameBranchSession(branch) {
+    if (!route.scenarioId || !branch?.session_id || sending) return;
+    const currentName = branch.display_name || branch.session_id;
+    const nextName = window.prompt("Branch name", currentName);
+    if (nextName === null) return;
+    const trimmed = nextName.trim();
+    if (!trimmed || trimmed === currentName) return;
+    try {
+      await updateSessionSettings(route.scenarioId, branch.session_id, { display_name: trimmed });
+      await loadTimeline(route.scenarioId, currentSessionId);
+      turnNotice = translateNow("session.branchNameUpdated", { name: trimmed });
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : translateNow("session.branchNameUpdateError");
+    }
+  }
+
   function lastUpdatedAt() {
-    return sessionMetadata.updated_at || sessionMetadata.created_at || "未記録";
+    return sessionMetadata.updated_at || sessionMetadata.created_at || translateNow("common.unrecorded");
   }
 
   /** @param {"prev" | "next"} direction */
@@ -991,7 +1254,7 @@
       await updateSessionStarting(route.scenarioId, currentSessionId, startings[next].id);
       await reloadSession(route.scenarioId, currentSessionId);
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : "Starting の切り替えに失敗しました。";
+      error = caught instanceof Error ? caught.message : translateNow("session.switchStartingError");
     } finally {
       switchingStarting = false;
     }
@@ -1012,7 +1275,7 @@
 
 <main class:mobile-right-open={$layout.rightOpen} class:without-side={!$layout.sideOpen} class="session-shell">
   {#if showSessionSide && isMobile && $layout.sideOpen}
-    <button class="mobile-overlay-scrim" type="button" aria-label="左カラムを閉じる" onclick={() => layout.setSideOpen(false)}></button>
+    <button class="mobile-overlay-scrim" type="button" aria-label={$t("session.closeSideCol")} onclick={() => layout.setSideOpen(false)}></button>
   {/if}
   {#if showSessionSide && $layout.sideOpen}
     <aside class="session-side" aria-labelledby="session-side-heading">
@@ -1021,7 +1284,7 @@
           <p class="eyebrow">Obsidian-first RP</p>
           <h1 id="session-side-heading">Locus RP</h1>
         </div>
-        <button class="icon-button" type="button" title="左カラムを閉じる" onclick={() => layout.setSideOpen(false)}>
+        <button class="icon-button" type="button" title={$t("session.closeSideCol")} onclick={() => layout.setSideOpen(false)}>
           <PanelLeftClose size={18} aria-hidden="true" />
         </button>
       </div>
@@ -1032,15 +1295,15 @@
           <button class="setting-card setting-card-button" type="button" onclick={() => openPicker("persona")}>
             <div class="setting-card-head">
               <span>Persona</span>
-              <span class="card-action-label">変更</span>
+              <span class="card-action-label">{$t("session.change")}</span>
             </div>
             <strong>{personaName($selection, $selection.selectedPersona)}</strong>
-            <small>{route.scenarioId || "scenario 未指定"}</small>
+            <small>{route.scenarioId || $t("session.noScenarioId")}</small>
           </button>
           <button class="setting-card setting-card-button" type="button" onclick={() => openPicker("roleplay")}>
             <div class="setting-card-head">
               <span>GM profile</span>
-              <span class="card-action-label">変更</span>
+              <span class="card-action-label">{$t("session.change")}</span>
             </div>
             <strong>{$selection.selectedRpProfile}</strong>
             <small>{profileModel($selection, $selection.selectedRpProfile)}</small>
@@ -1048,7 +1311,7 @@
           <button class="setting-card setting-card-button" type="button" onclick={() => openPicker("state")}>
             <div class="setting-card-head">
               <span>State profile</span>
-              <span class="card-action-label">変更</span>
+              <span class="card-action-label">{$t("session.change")}</span>
             </div>
             <strong>{$selection.selectedStateProfile}</strong>
             <small>{profileModel($selection, $selection.selectedStateProfile)}</small>
@@ -1061,7 +1324,7 @@
           <h2 id="starting-heading">Starting</h2>
           {#if startings.length}
             <label class="setting-card">
-              <span>開始シチュエーション</span>
+              <span>{$t("session.startSituation")}</span>
               <select class="compact-input" bind:value={selectedStartingId}>
                 {#each startings as starting}
                   <option value={starting.id}>{starting.name || starting.id}</option>
@@ -1070,16 +1333,28 @@
               <small>{startings.find((/** @type {any} */ s) => s.id === selectedStartingId)?.name || selectedStartingId}</small>
             </label>
           {:else}
-            <p class="notice">このシナリオには Starting がありません。</p>
+            <p class="notice">{$t("session.noStarting")}</p>
+          {/if}
+          {#if starts.length}
+            <label class="setting-card">
+              <span>{$t("session.startId")}</span>
+              <select class="compact-input" bind:value={selectedStartId}>
+                <option value="">{$t("session.startIdNone")}</option>
+                {#each starts as start}
+                  <option value={start.id}>{start.name || start.id}</option>
+                {/each}
+              </select>
+            </label>
           {/if}
         </section>
       {/if}
 
       {#if !currentSessionId}
         <button class="primary-action" type="button" disabled={loading} onclick={() => void createSelectedSession()}>
-          選択して開始
+          {$t("session.selectAndStart")}
         </button>
       {/if}
+
     </aside>
   {/if}
 
@@ -1087,7 +1362,7 @@
     <header class="session-header">
       <div class="session-title-group">
         {#if showSessionSide && !$layout.sideOpen}
-          <button class="icon-button" type="button" title="左カラムを開く" onclick={() => layout.setSideOpen(true)}>
+          <button class="icon-button" type="button" title={$t("session.openSideCol")} onclick={() => layout.setSideOpen(true)}>
             <PanelLeftOpen size={18} aria-hidden="true" />
           </button>
         {/if}
@@ -1109,14 +1384,14 @@
     {/if}
 
     {#if loading}
-      <p class="notice">セッションを読み込んでいます。</p>
+      <p class="notice">{$t("session.loadingSession")}</p>
     {:else if !currentSessionId}
       {#if isMobile}
         <section class="panel mobile-session-start-panel" aria-labelledby="new-session-heading">
           <div class="panel-header compact">
             <div>
               <p class="eyebrow">New Session</p>
-              <h3 id="new-session-heading">開始設定</h3>
+              <h3 id="new-session-heading">{$t("session.startSetup")}</h3>
             </div>
           </div>
 
@@ -1131,9 +1406,20 @@
                 </select>
                 <small>{startings.find((/** @type {any} */ s) => s.id === selectedStartingId)?.name || selectedStartingId}</small>
               {:else}
-                <small>このシナリオには Starting がありません。</small>
+                <small>{$t("session.noStarting")}</small>
               {/if}
             </label>
+            {#if starts.length}
+              <label class="setting-card">
+                <span>{$t("session.startId")}</span>
+                <select class="compact-input" bind:value={selectedStartId}>
+                  <option value="">{$t("session.startIdNone")}</option>
+                  {#each starts as start}
+                    <option value={start.id}>{start.name || start.id}</option>
+                  {/each}
+                </select>
+              </label>
+            {/if}
           </div>
 
           <div class="mobile-start-footer">
@@ -1141,15 +1427,15 @@
               <button class="setting-card setting-card-button" type="button" onclick={() => openPicker("persona")}>
                 <div class="setting-card-head">
                   <span>Persona</span>
-                  <span class="card-action-label">変更</span>
+                  <span class="card-action-label">{$t("session.change")}</span>
                 </div>
                 <strong>{personaName($selection, $selection.selectedPersona)}</strong>
-                <small>{route.scenarioId || "scenario 未指定"}</small>
+                <small>{route.scenarioId || $t("session.noScenarioId")}</small>
               </button>
               <button class="setting-card setting-card-button" type="button" onclick={() => openPicker("roleplay")}>
                 <div class="setting-card-head">
                   <span>GM profile</span>
-                  <span class="card-action-label">変更</span>
+                  <span class="card-action-label">{$t("session.change")}</span>
                 </div>
                 <strong>{$selection.selectedRpProfile}</strong>
                 <small>{profileModel($selection, $selection.selectedRpProfile)}</small>
@@ -1157,30 +1443,30 @@
               <button class="setting-card setting-card-button" type="button" onclick={() => openPicker("state")}>
                 <div class="setting-card-head">
                   <span>State profile</span>
-                  <span class="card-action-label">変更</span>
+                  <span class="card-action-label">{$t("session.change")}</span>
                 </div>
                 <strong>{$selection.selectedStateProfile}</strong>
                 <small>{profileModel($selection, $selection.selectedStateProfile)}</small>
               </button>
             </div>
             <button class="primary-action" type="button" disabled={loading} onclick={() => void createSelectedSession()}>
-              選択して開始
+              {$t("session.selectAndStart")}
             </button>
           </div>
         </section>
       {:else}
         <section class="panel route-panel" aria-labelledby="new-session-heading">
           <h3 id="new-session-heading">New Session</h3>
-          <p>左カラムで Persona / GM profile / State profile を選択して開始してください。</p>
+          <p>{$t("session.selectToStart")}</p>
         </section>
       {/if}
     {:else}
       <div class="session-workspace">
-        <div class="mobile-right-tabs" aria-label="State と Timeline">
+        <div class="mobile-right-tabs" aria-label={$t("session.stateAndTimeline")}>
           <button
             class:active={$layout.rightOpen && $layout.rightPanel === "state"}
             type="button"
-            aria-label="State を開く"
+            aria-label={$t("session.openState")}
             onclick={() => openRightPanel("state")}
           >
             State
@@ -1188,24 +1474,24 @@
           <button
             class:active={$layout.rightOpen && $layout.rightPanel === "timeline"}
             type="button"
-            aria-label="Timeline を開く"
+            aria-label={$t("session.openTimeline")}
             onclick={() => openRightPanel("timeline")}
           >
             Timeline
           </button>
         </div>
         {#if isMobile && $layout.rightOpen}
-          <button class="mobile-overlay-scrim right" type="button" aria-label="右パネルを閉じる" onclick={() => layout.setRightOpen(false)}></button>
+          <button class="mobile-overlay-scrim right" type="button" aria-label={$t("session.closeRightPanel")} onclick={() => layout.setRightOpen(false)}></button>
         {/if}
         <section class="panel chat-panel" aria-labelledby="chat-heading">
           <div class="panel-header compact">
             <h3 id="chat-heading">Chat</h3>
-            <div class="chat-top-tools" aria-label="セッション操作">
-              <span>{route.scenarioId || "scenario 未指定"}</span>
-              <button class="icon-button" type="button" title="セッション情報" aria-label="セッション情報" onclick={openSessionInfo}>
+            <div class="chat-top-tools" aria-label={$t("session.sessionOps")}>
+              <span>{route.scenarioId || $t("session.noScenarioId")}</span>
+              <button class="icon-button" type="button" title={$t("session.sessionInfo")} aria-label={$t("session.sessionInfo")} onclick={openSessionInfo}>
                 <Info size={17} aria-hidden="true" />
               </button>
-              <button class="icon-button" type="button" title="セッション設定" aria-label="セッション設定" onclick={openSessionSettings}>
+              <button class="icon-button" type="button" title={$t("session.sessionSettings")} aria-label={$t("session.sessionSettings")} onclick={openSessionSettings}>
                 <Settings size={17} aria-hidden="true" />
               </button>
             </div>
@@ -1216,7 +1502,7 @@
               {#if logPagination.has_more_before}
                 <div class="log-page-controls">
                   <button class="tool-button" type="button" disabled={loadingOlderLog || sending} onclick={() => void loadOlderLog()}>
-                    {loadingOlderLog ? "読み込み中" : `前の${LOG_TURN_PAGE_SIZE}ターンを読み込む`}
+                    {loadingOlderLog ? $t("session.loadingMore") : $t("session.loadOlderTurns", { count: LOG_TURN_PAGE_SIZE })}
                   </button>
                   <span>
                     Turn {logPagination.min_turn ?? "-"}-{logPagination.max_turn ?? "-"} / {logPagination.total_turns ?? "-"} turns
@@ -1234,8 +1520,10 @@
                       <div class="message-editor" style="margin-top: 8px;">
                         <textarea class="settings-textarea" bind:value={editDraft} rows={Math.max(3, (editDraft || "").split("\n").length)}></textarea>
                         <div class="editor-actions memory-actions" style="margin-top: 8px; justify-content: flex-end;">
-                          <button class="tool-button" type="button" disabled={editSaving} onclick={cancelEditing}>キャンセル</button>
-                          <button class="primary-button" type="button" disabled={editSaving} onclick={() => saveEdit(message)}>変更を保存</button>
+                          <button class="tool-button" type="button" disabled={editSaving} onclick={cancelEditing}>{$t("common.cancel")}</button>
+                          <button class="primary-button" type="button" disabled={editSaving} onclick={() => saveEdit(message)}>
+                            {shouldBranchFromEditedUserMessage(message) ? $t("session.branchAndLoad") : $t("common.saveChanges")}
+                          </button>
                         </div>
                       </div>
                     {:else if displaySegments(message).length}
@@ -1261,7 +1549,7 @@
                         {:else if segment.type === "meta"}
                           <div class="meta-segment">
                             {#if segment.live}
-                              <div class="meta-live-label">推論中<span class="loading-dots" aria-hidden="true"></span></div>
+                              <div class="meta-live-label">{$t("session.reasoning")}<span class="loading-dots" aria-hidden="true"></span></div>
                               <div class="meta-content meta-content--live markdown-body">
                                 {@html renderMarkdown(resolveUser(segment.content))}
                               </div>
@@ -1272,7 +1560,7 @@
                                 aria-expanded={expandedMetaSegments[metaSegmentKey(message, segmentIndex)] === true ? "true" : "false"}
                                 onclick={() => toggleMetaSegment(metaSegmentKey(message, segmentIndex))}
                               >
-                                {expandedMetaSegments[metaSegmentKey(message, segmentIndex)] === true ? "推論メモを隠す" : "推論メモを表示"}
+                                {expandedMetaSegments[metaSegmentKey(message, segmentIndex)] === true ? $t("session.hideReasoning") : $t("session.showReasoning")}
                               </button>
                               {#if expandedMetaSegments[metaSegmentKey(message, segmentIndex)] === true}
                                 <div class="meta-content markdown-body">
@@ -1286,58 +1574,61 @@
                         {/if}
                       {/each}
                       {#if message.streaming}
-                        <div class="stream-loading-indicator" aria-label="GM応答を待機中">
+                        <div class="stream-loading-indicator" aria-label={$t("session.waitingGM")}>
                           <Wand2 size={15} aria-hidden="true" />
-                          <span>{message.content ? "生成中" : "Stream待機中"}</span>
+                          <span>{message.content ? $t("session.generating") : $t("session.waitingStream")}</span>
                           <span class="loading-dots" aria-hidden="true"></span>
                         </div>
                       {/if}
                     </div>
                   {/if}
                 </div>
-                  <div class="message-actions" aria-label={message.role === "assistant" ? "GM応答操作" : "ユーザー発言操作"}>
+                  <div class="message-actions" aria-label={message.role === "assistant" ? $t("session.gmActions") : $t("session.userActions")}>
                     {#if message.role === "assistant"}
                       {#if message.is_starting}
                         {#if startings.length > 1 && (sessionMetadata?.turn_count ?? 1) === 0}
-                          <div class="candidate-switcher" aria-label="Starting切り替え">
-                            <button class="icon-button message-action-button" type="button" title="前のStarting" aria-label="前のStarting" disabled={switchingStarting} onclick={() => void switchStarting("prev")}>
+                          <div class="candidate-switcher" aria-label={$t("session.switchStartingLabel")}>
+                            <button class="icon-button message-action-button" type="button" title={$t("session.prevStarting")} aria-label={$t("session.prevStarting")} disabled={switchingStarting} onclick={() => void switchStarting("prev")}>
                               <ChevronLeft size={15} aria-hidden="true" />
                             </button>
                             <span>{startings.findIndex((/** @type {any} */ s) => s.id === message.starting_id) + 1}/{startings.length}</span>
-                            <button class="icon-button message-action-button" type="button" title="次のStarting" aria-label="次のStarting" disabled={switchingStarting} onclick={() => void switchStarting("next")}>
+                            <button class="icon-button message-action-button" type="button" title={$t("session.nextStarting")} aria-label={$t("session.nextStarting")} disabled={switchingStarting} onclick={() => void switchStarting("next")}>
                               <ChevronRight size={15} aria-hidden="true" />
                             </button>
                           </div>
                         {/if}
                       {:else}
                         {#if message.turn === latestTurn}
-                          <button class="icon-button message-action-button" type="button" title="再生成" aria-label="再生成" disabled={sending} onclick={() => handleRegenerate(message)}>
+                          <button class="icon-button message-action-button" type="button" title={$t("session.continueGen")} aria-label={$t("session.continueGen")} disabled={sending} onclick={() => handleContinue(message)}>
+                            <ChevronDown size={15} aria-hidden="true" />
+                          </button>
+                          <button class="icon-button message-action-button" type="button" title={$t("session.regenerate")} aria-label={$t("session.regenerate")} disabled={sending} onclick={() => handleRegenerate(message)}>
                             <RefreshCcw size={15} aria-hidden="true" />
                           </button>
-                          <button class="icon-button message-action-button" type="button" title="削除" aria-label="削除" disabled={deletingTurn === message.turn} onclick={() => handleDeleteMessage(message)}>
+                          <button class="icon-button message-action-button" type="button" title={$t("session.delete")} aria-label={$t("session.delete")} disabled={deletingTurn === message.turn} onclick={() => handleDeleteMessage(message)}>
                             <Trash2 size={15} aria-hidden="true" />
                           </button>
                         {/if}
-                        <button class="icon-button message-action-button" type="button" title="編集" aria-label="編集" onclick={() => startEditing(message)}>
+                        <button class="icon-button message-action-button" type="button" title={$t("session.edit")} aria-label={$t("session.edit")} onclick={() => startEditing(message)}>
                           <Pencil size={15} aria-hidden="true" />
                         </button>
                         <button
                           class="icon-button message-action-button"
                           type="button"
-                          title="この時点から分岐"
-                          aria-label="この時点から分岐"
+                          title={$t("session.branchFromHere")}
+                          aria-label={$t("session.branchFromHere")}
                           disabled={sending || message.turn == null}
-                          onclick={() => message.turn != null && handleBranchFromTurn(message.turn)}
+                          onclick={() => message.turn != null && openBranchDialog(message.turn)}
                         >
                           <FileStack size={15} aria-hidden="true" />
                         </button>
                         {#if message.candidates && message.candidates.length > 1}
-                          <div class="candidate-switcher" aria-label="応答候補切り替え">
-                            <button class="icon-button message-action-button" type="button" title="前の候補" aria-label="前の候補" onclick={() => handleSwitchCandidate(message, "prev")}>
+                          <div class="candidate-switcher" aria-label={$t("session.switchCandidate")}>
+                            <button class="icon-button message-action-button" type="button" title={$t("session.prevCandidate")} aria-label={$t("session.prevCandidate")} onclick={() => handleSwitchCandidate(message, "prev")}>
                               <ChevronLeft size={15} aria-hidden="true" />
                             </button>
                             <span>{(message.active_candidate_index || 0) + 1}/{message.candidates.length}</span>
-                            <button class="icon-button message-action-button" type="button" title="次の候補" aria-label="次の候補" onclick={() => handleSwitchCandidate(message, "next")}>
+                            <button class="icon-button message-action-button" type="button" title={$t("session.nextCandidate")} aria-label={$t("session.nextCandidate")} onclick={() => handleSwitchCandidate(message, "next")}>
                               <ChevronRight size={15} aria-hidden="true" />
                             </button>
                           </div>
@@ -1345,11 +1636,11 @@
                       {/if}
                     {:else}
                       {#if message.turn === latestTurn}
-                        <button class="icon-button message-action-button" type="button" title="削除" aria-label="削除" disabled={deletingTurn === message.turn} onclick={() => handleDeleteMessage(message)}>
+                        <button class="icon-button message-action-button" type="button" title={$t("session.delete")} aria-label={$t("session.delete")} disabled={deletingTurn === message.turn} onclick={() => handleDeleteMessage(message)}>
                           <Trash2 size={15} aria-hidden="true" />
                         </button>
                       {/if}
-                      <button class="icon-button message-action-button" type="button" title="編集" aria-label="編集" onclick={() => startEditing(message)}>
+                      <button class="icon-button message-action-button" type="button" title={$t("session.edit")} aria-label={$t("session.edit")} onclick={() => startEditing(message)}>
                         <Pencil size={15} aria-hidden="true" />
                       </button>
                     {/if}
@@ -1359,7 +1650,7 @@
               {#if logPagination.has_more_after}
                 <div class="log-page-controls">
                   <button class="tool-button" type="button" disabled={loadingOlderLog || sending} onclick={() => void loadLatestLog()}>
-                    最新のターンへ
+                    {$t("session.latestTurn")}
                   </button>
                   <span>
                     Turn {logPagination.min_turn ?? "-"}-{logPagination.max_turn ?? "-"} / {logPagination.total_turns ?? "-"} turns
@@ -1367,19 +1658,19 @@
                 </div>
               {/if}
             {:else}
-              <p class="notice">まだログはありません。</p>
+              <p class="notice">{$t("session.noLog")}</p>
             {/if}
             {#if sending && !$preferences.streamEnabled}
-              <div class="inline-loading-indicator" aria-label="GM応答生成中">
+              <div class="inline-loading-indicator" aria-label={$t("session.generatingResponse")}>
                 <Wand2 size={16} aria-hidden="true" />
-                <span>応答を生成しています</span>
+                <span>{$t("session.generatingResponse")}</span>
                 <span class="loading-dots" aria-hidden="true"></span>
               </div>
             {/if}
             {#if stateUpdating}
-              <div class="inline-loading-indicator" aria-label="State更新中">
+              <div class="inline-loading-indicator" aria-label={$t("session.updatingState")}>
                 <Wand2 size={16} aria-hidden="true" />
-                <span>State更新中</span>
+                <span>{$t("session.updatingState")}</span>
                 <span class="loading-dots" aria-hidden="true"></span>
               </div>
             {/if}
@@ -1388,7 +1679,7 @@
           {#if newMessageBadge}
             <div class="new-message-badge-bar">
               <button class="new-message-badge" type="button" onclick={() => void dismissNewMessageBadge()}>
-                <ChevronDown size={14} aria-hidden="true" /> 新しいメッセージ
+                <ChevronDown size={14} aria-hidden="true" /> {$t("session.newMessages")}
               </button>
             </div>
           {/if}
@@ -1399,7 +1690,7 @@
                 bind:this={composer}
                 bind:value={input}
                 disabled={!currentSessionId || sending}
-                placeholder={currentSessionId ? "次の行動を入力" : "セッション作成中"}
+                placeholder={currentSessionId ? $t("session.inputPlaceholder") : $t("session.creatingSessionPlaceholder")}
                 rows="1"
                 onkeydown={handleKeydown}
               ></textarea>
@@ -1413,13 +1704,13 @@
               </div>
             </div>
             <div class="composer-footer-actions">
-              <label class="send-mode-toggle" title={sending ? "受信中は切り替えできません。次の会話から適用されます" : "Stream応答を逐次表示します"}>
+              <label class="send-mode-toggle" title={sending ? $t("session.streamToggleSending") : $t("session.streamToggleTitle")}>
                 <input type="checkbox" checked={$preferences.streamEnabled} disabled={sending} onchange={(event) => preferences.setStreamEnabled(event.currentTarget.checked)} />
                 <span>Stream</span>
               </label>
-              <label class="send-mode-toggle" title="チェックを外すと Ctrl+Enter で送信になります">
+              <label class="send-mode-toggle" title={$t("session.enterToggleTitle")}>
                 <input type="checkbox" checked={$preferences.sendOnEnter} onchange={(event) => preferences.setSendOnEnter(event.currentTarget.checked)} />
-                <span>Enterで送信</span>
+                <span>{$t("session.sendOnEnter")}</span>
               </label>
               <button
                 class="send-button"
@@ -1429,10 +1720,10 @@
               >
                 {#if sending}
                   <Square size={16} aria-hidden="true" />
-                  停止
+                  {$t("session.stop")}
                 {:else}
                   <Send size={16} aria-hidden="true" />
-                  送信
+                  {$t("session.send")}
                 {/if}
               </button>
             </div>
@@ -1454,14 +1745,14 @@
                 Timeline
               </button>
             </div>
-            <button class="icon-button mobile-overlay-close" type="button" title="右パネルを閉じる" onclick={() => layout.setRightOpen(false)}>
+            <button class="icon-button mobile-overlay-close" type="button" title={$t("session.closeRightPanel")} onclick={() => layout.setRightOpen(false)}>
               <ChevronRight size={17} aria-hidden="true" />
             </button>
           </div>
           {#if $layout.rightPanel === "state"}
             <div class="state-panel-toolbar">
-              <span class="state-scope-label">{currentSessionId ? "セッション現在値" : "シナリオ初期値"}</span>
-              <button type="button" onclick={() => route.scenarioId && loadState(route.scenarioId, currentSessionId)}>再読込</button>
+              <span class="state-scope-label">{currentSessionId ? $t("session.sessionState") : $t("session.scenarioState")}</span>
+              <button type="button" onclick={() => route.scenarioId && loadState(route.scenarioId, currentSessionId)}>{$t("common.reload")}</button>
             </div>
             <StatePanel {state} scenarioId={route.scenarioId || ""} stateJsonStr={stateJson()} />
           {:else}
@@ -1471,9 +1762,11 @@
                 {currentSessionId}
                 metadata={timelineMetadata}
                 onJump={handleJumpToTurn}
-                onBranch={handleBranchFromTurn}
+                onBranch={openBranchDialog}
                 onToggleBookmark={handleToggleBookmark}
                 onOpenSession={(sessionId) => route.scenarioId && onNavigate.openSession(route.scenarioId, sessionId)}
+                onCopySessionId={copyBranchSessionId}
+                onRenameBranch={renameBranchSession}
               />
             </div>
           {/if}
@@ -1488,7 +1781,7 @@
 
   {#if sessionModal}
     <div class="modal-backdrop">
-      <button class="modal-scrim" type="button" aria-label="閉じる" onclick={closeSessionModal}></button>
+      <button class="modal-scrim" type="button" aria-label={$t("common.close")} onclick={closeSessionModal}></button>
       <div
         class="session-modal"
         role="dialog"
@@ -1498,7 +1791,7 @@
       >
         <div class="panel-header compact">
           <h3 id="session-modal-heading">{sessionModal === "info" ? "Session Info" : "Session Settings"}</h3>
-          <button class="icon-button" type="button" title="閉じる" onclick={closeSessionModal}>×</button>
+          <button class="icon-button" type="button" title={$t("common.close")} onclick={closeSessionModal}>×</button>
         </div>
 
         {#if sessionModal === "info"}
@@ -1507,7 +1800,7 @@
               <h4>Identity</h4>
               <dl class="info-list">
                 <div><dt>Session</dt><dd>{currentSessionId}</dd></div>
-                <div><dt>Scenario</dt><dd>{route.scenarioId || "未指定"}</dd></div>
+                <div><dt>Scenario</dt><dd>{route.scenarioId || $t("session.unspecified")}</dd></div>
                 <div><dt>Display name</dt><dd>{sessionMetadata.display_name || currentSessionId}</dd></div>
                 <div><dt>Updated</dt><dd>{lastUpdatedAt()}</dd></div>
               </dl>
@@ -1518,7 +1811,7 @@
               <dl class="info-list">
                 <div><dt>Persona</dt><dd>{sessionMetadata.persona_id || $selection.selectedPersona}</dd></div>
                 <div><dt>GM profile</dt><dd>{sessionMetadata.rp_profile_id || $selection.selectedRpProfile}</dd></div>
-                <div><dt>State profile</dt><dd>{sessionMetadata.summary_profile_id || "未設定"}</dd></div>
+                <div><dt>State profile</dt><dd>{sessionMetadata.summary_profile_id || $t("session.unset")}</dd></div>
                 <div><dt>Turns</dt><dd>{sessionMetadata.turn_count ?? messages.length}</dd></div>
               </dl>
             </section>
@@ -1526,8 +1819,8 @@
             <section class="modal-section">
               <h4>Branch</h4>
               <dl class="info-list">
-                <div><dt>Parent</dt><dd>{sessionMetadata.parent_session_id || "なし"}</dd></div>
-                <div><dt>Branched turn</dt><dd>{sessionMetadata.branched_from_turn ?? "なし"}</dd></div>
+                <div><dt>Parent</dt><dd>{sessionMetadata.parent_session_id || $t("session.none")}</dd></div>
+                <div><dt>Branched turn</dt><dd>{sessionMetadata.branched_from_turn ?? $t("session.none")}</dd></div>
                 <div><dt>State snapshot</dt><dd>{sessionMetadata.state_snapshot_available === false ? "fallback" : "available"}</dd></div>
               </dl>
             </section>
@@ -1536,7 +1829,7 @@
               <h4>State</h4>
               <dl class="info-list">
                 <div><dt>Scope</dt><dd>session</dd></div>
-                <div><dt>Top keys</dt><dd>{stateTopLevelKeys().join(", ") || "なし"}</dd></div>
+                <div><dt>Top keys</dt><dd>{stateTopLevelKeys().join(", ") || $t("session.none")}</dd></div>
                 <div><dt>Timeline items</dt><dd>{timeline.length}</dd></div>
                 <div><dt>Log entries</dt><dd>{messages.length}</dd></div>
               </dl>
@@ -1545,7 +1838,8 @@
         {:else}
           <SessionSettingsModal
             scenarioId={route.scenarioId || ""}
-            bind:userNoteDraft
+            bind:sessionNoteDraft
+            bind:sceneNoteDraft
             bind:activeMemoryPath
             {settingsSaving}
             {settingsMessage}
@@ -1573,6 +1867,40 @@
             {loadMemoryList}
           />
         {/if}
+      </div>
+    </div>
+  {/if}
+
+  {#if branchTurnDraft !== null}
+    <div class="modal-backdrop">
+      <button class="modal-scrim" type="button" aria-label={$t("common.close")} onclick={closeBranchDialog}></button>
+      <div class="session-modal" role="dialog" aria-modal="true" aria-labelledby="branch-modal-heading" tabindex="-1">
+        <div class="panel-header compact">
+          <h3 id="branch-modal-heading">{$t("session.branchCreate")}</h3>
+          <button class="icon-button" type="button" title={$t("common.close")} disabled={branchSaving} onclick={closeBranchDialog}>×</button>
+        </div>
+        <div class="modal-grid">
+          <section class="modal-section">
+            <h4>Checkpoint</h4>
+            <dl class="info-list compact-list">
+              <div><dt>Turn</dt><dd>{branchTurnDraft}</dd></div>
+              <div><dt>State snapshot</dt><dd>{branchSnapshotAvailable(branchTurnDraft) ? "available" : "fallback"}</dd></div>
+            </dl>
+            {#if branchError}
+              <p class="placeholder-copy error-copy">{branchError}</p>
+            {/if}
+            <label class="setting-card">
+              <span>Branch name</span>
+              <input class="compact-input" bind:value={branchNameDraft} placeholder={defaultBranchName(branchTurnDraft)} />
+            </label>
+            <div class="modal-actions">
+              <button type="button" disabled={branchSaving} onclick={closeBranchDialog}>{$t("common.cancel")}</button>
+              <button type="button" disabled={branchSaving} onclick={() => branchTurnDraft !== null && handleBranchFromTurn(branchTurnDraft)}>
+                {branchSaving ? $t("common.creating") : $t("session.createBranch")}
+              </button>
+            </div>
+          </section>
+        </div>
       </div>
     </div>
   {/if}

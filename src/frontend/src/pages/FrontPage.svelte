@@ -18,6 +18,7 @@
   } from "lucide-svelte";
   import { onMount } from "svelte";
   import { createScenario, deleteSession, listScenarioSessions, listScenarios, updateSessionSettings } from "../lib/api.js";
+  import { formatDateTime, locale, t } from "../lib/i18n.js";
   import { renderMarkdown } from "../lib/markdown.js";
 
   /**
@@ -105,7 +106,7 @@
         await loadSessions(selectedScenarioId);
       }
     } catch (caught) {
-      scenarioError = caught instanceof Error ? caught.message : "シナリオ一覧を読み込めませんでした。";
+      scenarioError = caught instanceof Error ? caught.message : $t("front.loadScenariosError");
     } finally {
       loadingScenarios = false;
     }
@@ -134,7 +135,7 @@
       const payload = await listScenarioSessions(scenarioId);
       sessions = payload.sessions || [];
     } catch (caught) {
-      sessionError = caught instanceof Error ? caught.message : "セッション一覧を読み込めませんでした。";
+      sessionError = caught instanceof Error ? caught.message : $t("front.loadSessionsError");
     } finally {
       loadingSessions = false;
     }
@@ -143,7 +144,7 @@
   /** @param {unknown} value */
   function displayValue(value) {
     if (value === undefined || value === null || value === "") {
-      return "未設定";
+      return $t("front.unset");
     }
     if (typeof value === "boolean") {
       return value ? "true" : "false";
@@ -154,16 +155,13 @@
   /** @param {string | undefined} value */
   function displayDate(value) {
     if (!value) {
-      return "updated 不明";
+      return $t("front.updatedUnknown");
     }
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) {
       return value;
     }
-    return new Intl.DateTimeFormat("ja-JP", {
-      dateStyle: "medium",
-      timeStyle: "short"
-    }).format(date);
+    return formatDateTime(value, $locale);
   }
 
   /** @param {SessionSummary[]} sessionItems */
@@ -204,7 +202,7 @@
       }
       return (left.session.display_name || left.session.session_id).localeCompare(
         right.session.display_name || right.session.session_id,
-        "ja"
+        $locale === "en" ? "en" : "ja"
       );
     };
 
@@ -274,7 +272,7 @@
       await updateSessionSettings(selectedScenarioId, sessionId, { display_name: displayName });
       await loadSessions(selectedScenarioId);
     } catch (caught) {
-      sessionError = caught instanceof Error ? caught.message : "セッション名を変更できませんでした。";
+      sessionError = caught instanceof Error ? caught.message : $t("front.renameError");
     } finally {
       sessionActionBusy = false;
     }
@@ -286,7 +284,7 @@
       return;
     }
     const sessionName = sessions.find((session) => session.session_id === sessionId)?.display_name || sessionId;
-    if (!window.confirm(`「${sessionName}」を削除します。この操作は元に戻せません。`)) {
+    if (!window.confirm($t("front.deleteConfirm", { name: sessionName }))) {
       return;
     }
     sessionActionBusy = true;
@@ -295,7 +293,7 @@
       await deleteSession(selectedScenarioId, sessionId);
       await loadSessions(selectedScenarioId);
     } catch (caught) {
-      sessionError = caught instanceof Error ? caught.message : "セッションを削除できませんでした。";
+      sessionError = caught instanceof Error ? caught.message : $t("front.deleteError");
     } finally {
       sessionActionBusy = false;
     }
@@ -306,7 +304,7 @@
       return;
     }
     const count = selectedSessionIds.size;
-    if (!window.confirm(`${count}件のセッションを削除します。この操作は元に戻せません。`)) {
+    if (!window.confirm($t("front.deleteSelectedConfirm", { count }))) {
       return;
     }
     sessionActionBusy = true;
@@ -319,7 +317,7 @@
       bulkDeleteMode = false;
       await loadSessions(selectedScenarioId);
     } catch (caught) {
-      sessionError = caught instanceof Error ? caught.message : "選択したセッションを削除できませんでした。";
+      sessionError = caught instanceof Error ? caught.message : $t("front.deleteSelectedError");
     } finally {
       sessionActionBusy = false;
     }
@@ -328,13 +326,13 @@
   function validateNewScenarioInput() {
     const scenarioId = newScenarioId.trim();
     if (!/^[A-Za-z0-9_-]+$/.test(scenarioId)) {
-      return "Scenario ID は半角英数字、underscore、hyphen のみで入力してください。";
+      return $t("front.invalidScenarioId");
     }
     if (!newScenarioName.trim()) {
-      return "表示名を入力してください。";
+      return $t("front.nameRequired");
     }
     if (scenarios.some((scenario) => scenario.id === scenarioId)) {
-      return "同じ ID のシナリオが既に存在します。";
+      return $t("front.duplicateScenarioId");
     }
     return "";
   }
@@ -381,7 +379,7 @@
       createScenarioModalOpen = false;
       onNavigate.openScenarioEdit(selectedScenarioId, "scenario.md");
     } catch (caught) {
-      createScenarioError = caught instanceof Error ? caught.message : "シナリオを作成できませんでした。";
+      createScenarioError = caught instanceof Error ? caught.message : $t("front.createScenarioError");
     } finally {
       creatingScenario = false;
     }
@@ -391,23 +389,23 @@
 <div class="toolbar">
   <div>
     <p class="eyebrow">Front Page</p>
-    <h2 id="workspace-heading">Scenarios</h2>
+    <h2 id="workspace-heading">{$t("front.heading")}</h2>
   </div>
 </div>
 
 {#if scenarioError}
   <p class="notice">{scenarioError}</p>
 {:else if loadingScenarios}
-  <p class="notice">シナリオ一覧を読み込んでいます。</p>
+  <p class="notice">{$t("front.loadingScenarios")}</p>
 {:else}
   <div class="front-layout">
     <section class="panel" aria-labelledby="scenario-list-heading">
       <div class="source-tree-header">
-        <h3 id="scenario-list-heading"><Layers size={18} aria-hidden="true" /> Scenario List</h3>
+        <h3 id="scenario-list-heading"><Layers size={18} aria-hidden="true" /> {$t("front.scenarioList")}</h3>
         <button
           class="icon-button compact-icon"
           type="button"
-          title="新規シナリオ作成"
+          title={$t("front.newScenario")}
           onclick={openCreateScenarioModal}
         >
           <FilePlus2 size={16} aria-hidden="true" />
@@ -429,7 +427,7 @@
           {/each}
         </ul>
       {:else}
-        <p>シナリオがありません。</p>
+        <p>{$t("front.noScenarios")}</p>
       {/if}
     </section>
 
@@ -437,13 +435,13 @@
       <section class="panel scenario-detail" aria-labelledby="scenario-detail-heading">
         <div class="panel-header">
           <div>
-            <p class="eyebrow">Selected Scenario</p>
+            <p class="eyebrow">{$t("front.selectedScenario")}</p>
             <h3 id="scenario-detail-heading">{activeScenario.name || activeScenario.id}</h3>
           </div>
           <button
             class="icon-button"
             type="button"
-            title="Scenario Edit"
+            title={$t("front.scenarioEdit")}
             onclick={() => onNavigate.openScenarioEdit(selectedScenarioId)}
           >
             <FilePenLine size={18} aria-hidden="true" />
@@ -457,26 +455,26 @@
         </div>
 
         <div class="description-row">
-          <div class="description markdown-body">{@html renderMarkdown(activeScenario.description || "説明文はありません。")}</div>
-          <button class="icon-button description-expand" type="button" title="拡大表示" onclick={() => (descriptionModalOpen = true)}>
+          <div class="description markdown-body">{@html renderMarkdown(activeScenario.description || $t("front.noDescription"))}</div>
+          <button class="icon-button description-expand" type="button" title={$t("front.expand")} onclick={() => (descriptionModalOpen = true)}>
             <Maximize2 size={15} aria-hidden="true" />
           </button>
         </div>
 
         <div class="actions">
           <button type="button" onclick={() => onNavigate.openSession(selectedScenarioId)}>
-            <Play size={16} aria-hidden="true" /> 開始
+            <Play size={16} aria-hidden="true" /> {$t("front.start")}
           </button>
           <button type="button" onclick={() => loadSessions(selectedScenarioId)}>
-            <RotateCcw size={16} aria-hidden="true" /> 再読込
+            <RotateCcw size={16} aria-hidden="true" /> {$t("front.reload")}
           </button>
         </div>
 
         <section class="session-area" aria-labelledby="session-list-heading">
           <div class="panel-header compact">
-            <h4 id="session-list-heading">Sessions</h4>
+            <h4 id="session-list-heading">{$t("front.sessions")}</h4>
             <div class="session-toolbar">
-              <span>{loadingSessions ? "Loading" : `${sessions.length} items`}</span>
+              <span>{loadingSessions ? $t("front.loading") : $t("front.items", { count: sessions.length })}</span>
               {#if sessions.length}
                 <button
                   class:active={bulkDeleteMode}
@@ -484,7 +482,7 @@
                   disabled={sessionActionBusy}
                   onclick={toggleBulkDeleteMode}
                 >
-                  <CheckSquare size={15} aria-hidden="true" /> 一括削除
+                  <CheckSquare size={15} aria-hidden="true" /> {$t("front.bulkDelete")}
                 </button>
               {/if}
             </div>
@@ -492,24 +490,24 @@
 
           {#if bulkDeleteMode}
             <div class="bulk-action-bar">
-              <span>{selectedSessionIds.size}件選択中</span>
+              <span>{$t("front.selectedCount", { count: selectedSessionIds.size })}</span>
               <button type="button" disabled={!selectedSessionIds.size || sessionActionBusy} onclick={() => void removeSelectedSessions()}>
-                <Trash2 size={15} aria-hidden="true" /> 選択を削除
+                <Trash2 size={15} aria-hidden="true" /> {$t("front.deleteSelected")}
               </button>
-              <button type="button" disabled={sessionActionBusy} onclick={toggleBulkDeleteMode}>キャンセル</button>
+              <button type="button" disabled={sessionActionBusy} onclick={toggleBulkDeleteMode}>{$t("front.cancel")}</button>
             </div>
           {/if}
 
           {#if sessionError}
             <p class="notice">{sessionError}</p>
           {:else if loadingSessions}
-            <p class="notice">セッション一覧を読み込んでいます。</p>
+            <p class="notice">{$t("front.loadingSessions")}</p>
           {:else if sessions.length}
             <ul class:bulk-delete-mode={bulkDeleteMode} class="session-list">
               {#each sessions as session}
                 <li>
                   {#if bulkDeleteMode}
-                    <label class="session-check" title="削除対象に選択">
+                    <label class="session-check" title={$t("front.selectForDelete")}>
                       <input
                         type="checkbox"
                         checked={selectedSessionIds.has(session.session_id)}
@@ -522,14 +520,14 @@
                       <div class="rename-row">
                         <input
                           bind:value={renameDraft}
-                          aria-label="セッション表示名"
+                          aria-label={$t("front.sessionDisplayName")}
                           onkeydown={(event) => {
                             if (event.key === "Enter") void saveRename(session.session_id);
                             if (event.key === "Escape") cancelRename();
                           }}
                         />
-                        <button type="button" disabled={sessionActionBusy || !renameDraft.trim()} onclick={() => void saveRename(session.session_id)}>保存</button>
-                        <button type="button" disabled={sessionActionBusy} onclick={cancelRename}>取消</button>
+                        <button type="button" disabled={sessionActionBusy || !renameDraft.trim()} onclick={() => void saveRename(session.session_id)}>{$t("front.save")}</button>
+                        <button type="button" disabled={sessionActionBusy} onclick={cancelRename}>{$t("front.cancelShort")}</button>
                       </div>
                     {:else}
                       <strong>{session.display_name || session.session_id}</strong>
@@ -538,7 +536,7 @@
                   </div>
                   <div class="session-meta">
                     <span>{displayDate(session.updated_at)}</span>
-                    <span>{session.turn_count || 0} turns</span>
+                    <span>{$t("timeline.turns", { count: session.turn_count || 0 })}</span>
                   </div>
                   <div class="session-actions">
                     <button
@@ -546,12 +544,12 @@
                       disabled={bulkDeleteMode || sessionActionBusy}
                       onclick={() => onNavigate.openSession(selectedScenarioId, session.session_id)}
                     >
-                      再開
+                      {$t("front.resume")}
                     </button>
                     <button
                       class="icon-button compact-icon"
                       type="button"
-                      title="改名"
+                      title={$t("front.rename")}
                       disabled={bulkDeleteMode || sessionActionBusy}
                       onclick={() => startRename(session)}
                     >
@@ -560,7 +558,7 @@
                     <button
                       class="icon-button compact-icon danger-button"
                       type="button"
-                      title="削除"
+                      title={$t("front.delete")}
                       disabled={bulkDeleteMode || sessionActionBusy}
                       onclick={() => void removeSession(session.session_id)}
                     >
@@ -571,13 +569,13 @@
               {/each}
             </ul>
           {:else}
-            <p class="notice">このシナリオにはまだセッションがありません。</p>
+            <p class="notice">{$t("front.noSessions")}</p>
           {/if}
         </section>
 
         <section class="session-tree-area" aria-labelledby="session-tree-heading">
           <div class="panel-header compact session-tree-accordion-header">
-            <h4 id="session-tree-heading"><GitBranch size={16} aria-hidden="true" /> 全体管理 / セッションツリー</h4>
+            <h4 id="session-tree-heading"><GitBranch size={16} aria-hidden="true" /> {$t("front.sessionTree")}</h4>
             <button
               class="session-tree-toggle"
               type="button"
@@ -585,7 +583,7 @@
               aria-controls="session-tree-content"
               onclick={() => (sessionTreeOpen = !sessionTreeOpen)}
             >
-              <span>{loadingSessions ? "Loading" : `${sessionTree.length} nodes`}</span>
+              <span>{loadingSessions ? $t("front.loading") : $t("front.nodes", { count: sessionTree.length })}</span>
               <ChevronDown size={16} aria-hidden="true" />
             </button>
           </div>
@@ -595,7 +593,7 @@
               {#if sessionError}
                 <p class="notice">{sessionError}</p>
               {:else if loadingSessions}
-                <p class="notice">セッションツリーを読み込んでいます。</p>
+                <p class="notice">{$t("front.loadingTree")}</p>
               {:else if sessionTree.length}
                 <ul class="session-tree-list">
                   {#each sessionTree as node}
@@ -613,30 +611,30 @@
                           <span>{node.session.session_id}</span>
                           {#if node.session.parent_session_id}
                             <small>
-                              {node.orphan ? "親session未検出" : `Turn ${node.session.branched_from_turn ?? "-"} から分岐`}
+                              {node.orphan ? $t("front.parentMissing") : $t("front.branchedFrom", { turn: node.session.branched_from_turn ?? "-" })}
                               / parent: {node.session.parent_session_id}
                             </small>
                           {:else}
-                            <small>root session{node.child_count ? ` / ${node.child_count} branches` : ""}</small>
+                            <small>{$t("front.rootSession")}{node.child_count ? ` / ${$t("front.branches", { count: node.child_count })}` : ""}</small>
                           {/if}
                         </div>
                       </div>
                       <div class="tree-node-meta">
                         <span>{displayDate(node.session.updated_at)}</span>
-                        <span>{node.session.turn_count || 0} turns</span>
+                        <span>{$t("timeline.turns", { count: node.session.turn_count || 0 })}</span>
                       </div>
                       <button
                         type="button"
                         disabled={sessionActionBusy}
                         onclick={() => onNavigate.openSession(selectedScenarioId, node.session.session_id)}
                       >
-                        再開
+                        {$t("front.resume")}
                       </button>
                     </li>
                   {/each}
                 </ul>
               {:else}
-                <p class="notice">このシナリオにはまだセッションツリーがありません。</p>
+                <p class="notice">{$t("front.noTree")}</p>
               {/if}
             </div>
           {/if}
@@ -648,11 +646,11 @@
 
 {#if createScenarioModalOpen}
   <div class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="create-scenario-modal-heading">
-    <button class="modal-scrim" type="button" aria-label="閉じる" onclick={closeCreateScenarioModal}></button>
+    <button class="modal-scrim" type="button" aria-label={$t("front.close")} onclick={closeCreateScenarioModal}></button>
     <div class="picker-modal create-source-modal">
       <div class="panel-header compact">
-        <h3 id="create-scenario-modal-heading"><FilePlus2 size={16} aria-hidden="true" /> 新規シナリオ作成</h3>
-        <button class="icon-button" type="button" title="閉じる" disabled={creatingScenario} onclick={closeCreateScenarioModal}>
+        <h3 id="create-scenario-modal-heading"><FilePlus2 size={16} aria-hidden="true" /> {$t("front.createScenario")}</h3>
+        <button class="icon-button" type="button" title={$t("front.close")} disabled={creatingScenario} onclick={closeCreateScenarioModal}>
           <X size={18} aria-hidden="true" />
         </button>
       </div>
@@ -662,12 +660,12 @@
         <input class="compact-input" bind:value={newScenarioId} placeholder="new_arc" />
       </label>
       <label>
-        <span>Name</span>
-        <input class="compact-input" bind:value={newScenarioName} placeholder="新しいシナリオ" />
+        <span>{$t("front.name")}</span>
+        <input class="compact-input" bind:value={newScenarioName} placeholder={$t("front.newScenarioNamePlaceholder")} />
       </label>
       <label>
-        <span>Description</span>
-        <textarea class="compact-input" rows="4" bind:value={newScenarioDescription} placeholder="最小テンプレートに入れる説明"></textarea>
+        <span>{$t("front.description")}</span>
+        <textarea class="compact-input" rows="4" bind:value={newScenarioDescription} placeholder={$t("front.newScenarioDescriptionPlaceholder")}></textarea>
       </label>
       <small class="source-path-preview">
         rp/scenarios/{newScenarioId.trim() || "<scenario_id>"}/
@@ -683,9 +681,9 @@
           disabled={creatingScenario || !newScenarioId.trim() || !newScenarioName.trim()}
           onclick={() => void createNewScenario()}
         >
-          <FilePlus2 size={15} aria-hidden="true" /> {creatingScenario ? "作成中" : "作成"}
+          <FilePlus2 size={15} aria-hidden="true" /> {creatingScenario ? $t("front.creating") : $t("front.create")}
         </button>
-        <button type="button" disabled={creatingScenario} onclick={closeCreateScenarioModal}>キャンセル</button>
+        <button type="button" disabled={creatingScenario} onclick={closeCreateScenarioModal}>{$t("front.cancel")}</button>
       </div>
     </div>
   </div>
@@ -693,16 +691,16 @@
 
 {#if descriptionModalOpen && activeScenario}
   <div class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="desc-modal-heading">
-    <button class="modal-scrim" type="button" aria-label="閉じる" onclick={() => (descriptionModalOpen = false)}></button>
+    <button class="modal-scrim" type="button" aria-label={$t("front.close")} onclick={() => (descriptionModalOpen = false)}></button>
     <div class="picker-modal description-modal">
       <div class="panel-header compact">
-        <h3 id="desc-modal-heading">{activeScenario.name || activeScenario.id} - 説明</h3>
-        <button class="icon-button" type="button" title="閉じる" onclick={() => (descriptionModalOpen = false)}>
+        <h3 id="desc-modal-heading">{$t("front.descriptionTitle", { name: activeScenario.name || activeScenario.id })}</h3>
+        <button class="icon-button" type="button" title={$t("front.close")} onclick={() => (descriptionModalOpen = false)}>
           <X size={18} aria-hidden="true" />
         </button>
       </div>
       <div class="description-modal-body markdown-body">
-        {@html renderMarkdown(activeScenario.description || "説明文はありません。")}
+        {@html renderMarkdown(activeScenario.description || $t("front.noDescription"))}
       </div>
     </div>
   </div>

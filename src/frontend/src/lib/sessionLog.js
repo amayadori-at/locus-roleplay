@@ -110,7 +110,9 @@ export function updateRegeneratingAssistantMessage(messages, turn, content) {
     if (message.role !== "assistant" || message.turn !== turn) {
       return message;
     }
-    return { ...message, content, streaming: true };
+    const updated = { ...message, content, streaming: true };
+    delete updated.segments;
+    return updated;
   });
 }
 

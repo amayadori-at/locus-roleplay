@@ -1,5 +1,6 @@
 <script>
   import { ChevronLeft, ChevronRight } from "lucide-svelte";
+  import { t, translateNow } from "./i18n.js";
   import {
     createPersona,
     getPersona,
@@ -64,7 +65,7 @@
       const res = await getPersona(id);
       pickerState.setContent(res.content || "");
     } catch (e) {
-      pickerState.setError(e instanceof Error ? e.message : "読み込みに失敗しました");
+      pickerState.setError(e instanceof Error ? e.message : translateNow("picker.loadError"));
     } finally {
       pickerState.setLoadingEdit(false);
     }
@@ -77,7 +78,7 @@
       const res = await getProfile(id);
       pickerState.setProfilePatch(profileDataToPatch(res.data || {}));
     } catch (e) {
-      pickerState.setError(e instanceof Error ? e.message : "読み込みに失敗しました");
+      pickerState.setError(e instanceof Error ? e.message : translateNow("picker.loadError"));
     } finally {
       pickerState.setLoadingEdit(false);
     }
@@ -93,7 +94,7 @@
       const personas = await listPersonas();
       selection.setPersonas(personas.personas || []);
     } catch (e) {
-      pickerState.setError(e instanceof Error ? e.message : "保存に失敗しました");
+      pickerState.setError(e instanceof Error ? e.message : translateNow("picker.saveError"));
     } finally {
       pickerState.setSaving(false);
     }
@@ -109,7 +110,7 @@
       const profiles = await listProfiles();
       selection.setProfiles(profiles.profiles || []);
     } catch (e) {
-      pickerState.setError(e instanceof Error ? e.message : "保存に失敗しました");
+      pickerState.setError(e instanceof Error ? e.message : translateNow("picker.saveError"));
     } finally {
       pickerState.setSaving(false);
     }
@@ -119,7 +120,7 @@
     const id = $pickerState.newPersonaId.trim();
     const name = $pickerState.newPersonaName.trim();
     if (!id || !name) {
-      pickerState.setNewPersonaError("IDと名前は必須です");
+      pickerState.setNewPersonaError(translateNow("picker.idNameRequired"));
       return;
     }
     pickerState.setNewPersonaCreating(true);
@@ -131,7 +132,7 @@
       pickerState.clearNewPersonaForm();
       await openPersonaEdit(id);
     } catch (e) {
-      pickerState.setNewPersonaError(e instanceof Error ? e.message : "作成に失敗しました");
+      pickerState.setNewPersonaError(e instanceof Error ? e.message : translateNow("picker.createError"));
     } finally {
       pickerState.setNewPersonaCreating(false);
     }
@@ -157,7 +158,7 @@
 </script>
 
 <div class="modal-backdrop">
-  <button class="modal-scrim" type="button" aria-label="閉じる" onclick={close}></button>
+  <button class="modal-scrim" type="button" aria-label={$t("common.close")} onclick={close}></button>
   <div
     class="picker-modal split-modal"
     role="dialog"
@@ -169,7 +170,7 @@
       <h3 id="picker-heading">
         {$pickerState.kind === "persona" ? "Persona" : $pickerState.kind === "roleplay" ? "GM profile" : "State profile"}
       </h3>
-      <button class="icon-button" type="button" title="閉じる" onclick={close}>×</button>
+      <button class="icon-button" type="button" title={$t("common.close")} onclick={close}>×</button>
     </div>
 
     <div class="picker-split">
@@ -186,7 +187,7 @@
                   onclick={() => openPersonaEdit(persona.id)}
                 >
                   <strong>{persona.name || persona.id}</strong>
-                  <span>{persona.id}{persona.id === $selection.selectedPersona ? " ✓使用中" : ""}</span>
+                  <span>{persona.id}{persona.id === $selection.selectedPersona ? " " + $t("picker.inUse") : ""}</span>
                 </button>
               </li>
             {/each}
@@ -196,13 +197,13 @@
               <div class="new-persona-form">
                 <input
                   type="text"
-                  placeholder="persona_id (英小文字_)"
+                  placeholder={$t("picker.personaIdPlaceholder")}
                   value={$pickerState.newPersonaId}
                   oninput={(e) => pickerState.setNewPersonaId(e.currentTarget.value)}
                 />
                 <input
                   type="text"
-                  placeholder="表示名"
+                  placeholder={$t("picker.displayName")}
                   value={$pickerState.newPersonaName}
                   oninput={(e) => pickerState.setNewPersonaName(e.currentTarget.value)}
                 />
@@ -211,14 +212,14 @@
                 {/if}
                 <div class="new-persona-actions">
                   <button type="button" disabled={$pickerState.newPersonaCreating} onclick={() => void submitNewPersona()}>
-                    {$pickerState.newPersonaCreating ? "作成中..." : "作成"}
+                    {$pickerState.newPersonaCreating ? $t("picker.creating") : $t("common.create")}
                   </button>
-                  <button type="button" onclick={() => pickerState.setCreatingPersona(false)}>キャンセル</button>
+                  <button type="button" onclick={() => pickerState.setCreatingPersona(false)}>{$t("common.cancel")}</button>
                 </div>
               </div>
             {:else}
               <button type="button" class="new-item-button" onclick={() => pickerState.setCreatingPersona(true)}>
-                + 新規作成
+                {$t("picker.newCreate")}
               </button>
             {/if}
           </div>
@@ -233,7 +234,7 @@
                   onclick={() => openProfileEdit(profile.id)}
                 >
                   <strong>{profile.id}{profile.id === defaultRpProfileId ? " ★" : ""}</strong>
-                  <span>{profile.model}{profile.id === $selection.selectedRpProfile ? " ✓使用中" : ""}</span>
+                  <span>{profile.model}{profile.id === $selection.selectedRpProfile ? " " + $t("picker.inUse") : ""}</span>
                 </button>
               </li>
             {/each}
@@ -249,7 +250,7 @@
                   onclick={() => openProfileEdit(profile.id)}
                 >
                   <strong>{profile.id}{profile.id === defaultStateProfileId ? " ★" : ""}</strong>
-                  <span>{profile.kind} / {profile.model}{profile.id === $selection.selectedStateProfile ? " ✓使用中" : ""}</span>
+                  <span>{profile.kind} / {profile.model}{profile.id === $selection.selectedStateProfile ? " " + $t("picker.inUse") : ""}</span>
                 </button>
               </li>
             {/each}
@@ -260,9 +261,9 @@
       <!-- 右: 編集エリア -->
       <div class="picker-split-edit">
         {#if $pickerState.loadingEdit}
-          <p class="notice">読み込み中...</p>
+          <p class="notice">{$t("picker.loading")}</p>
         {:else if !$pickerState.editId}
-          <p class="notice picker-hint">一覧から項目を選んでください。</p>
+          <p class="notice picker-hint">{$t("picker.selectHint")}</p>
         {:else if $pickerState.kind === "persona"}
           <div class="picker-edit-header">
             <span class="picker-edit-id">{$pickerState.editId}</span>
@@ -278,7 +279,7 @@
           {/if}
           <div class="picker-actions">
             <button type="button" class="use-button" onclick={() => choosePersona($pickerState.editId)}>
-              このペルソナを使用
+              {$t("picker.usePersona")}
             </button>
             <button
               type="button"
@@ -286,7 +287,7 @@
               disabled={$pickerState.saving || !$pickerState.dirty}
               onclick={() => void savePersonaEdit()}
             >
-              {$pickerState.saving ? "保存中..." : "変更を保存"}
+              {$pickerState.saving ? $t("picker.saving") : $t("picker.saveChanges")}
             </button>
           </div>
         {:else}
@@ -302,8 +303,8 @@
                 class="default-star-button"
                 class:active={$pickerState.kind === "roleplay" ? $pickerState.editId === defaultRpProfileId : $pickerState.editId === defaultStateProfileId}
                 title={$pickerState.kind === "roleplay"
-                  ? $pickerState.editId === defaultRpProfileId ? "デフォルト解除" : "デフォルトに設定"
-                  : $pickerState.editId === defaultStateProfileId ? "デフォルト解除" : "デフォルトに設定"}
+                  ? $pickerState.editId === defaultRpProfileId ? $t("picker.unsetDefault") : $t("picker.setDefault")
+                  : $pickerState.editId === defaultStateProfileId ? $t("picker.unsetDefault") : $t("picker.setDefault")}
                 onclick={() => setAsDefaultProfile($pickerState.editId)}
               >★</button>
             </div>
@@ -407,7 +408,7 @@
                   value={$pickerState.profilePatch.reasoning_effort}
                   onchange={(e) => pickerState.updateProfilePatch("reasoning_effort", e.currentTarget.value)}
                 >
-                  <option value="">— なし —</option>
+                  <option value="">{$t("picker.noValue")}</option>
                   <option value="low">low</option>
                   <option value="medium">medium</option>
                   <option value="high">high</option>
@@ -418,9 +419,9 @@
           {#if $pickerState.editId && $pickerState.profilePatch}
             <div class="picker-actions">
               {#if $pickerState.kind === "roleplay"}
-                <button type="button" class="use-button" onclick={() => chooseRpProfile($pickerState.editId)}>このプロファイルを使用</button>
+                <button type="button" class="use-button" onclick={() => chooseRpProfile($pickerState.editId)}>{$t("picker.useProfile")}</button>
               {:else}
-                <button type="button" class="use-button" onclick={() => chooseStateProfile($pickerState.editId)}>このプロファイルを使用</button>
+                <button type="button" class="use-button" onclick={() => chooseStateProfile($pickerState.editId)}>{$t("picker.useProfile")}</button>
               {/if}
               <button
                 type="button"
@@ -428,7 +429,7 @@
                 disabled={$pickerState.saving || !$pickerState.dirty}
                 onclick={() => void saveProfileEdit()}
               >
-                {$pickerState.saving ? "保存中..." : "変更を保存"}
+                {$pickerState.saving ? $t("picker.saving") : $t("picker.saveChanges")}
               </button>
             </div>
           {/if}

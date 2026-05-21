@@ -16,6 +16,7 @@ def latest_prompt_payload(
     messages: list[dict[str, str]],
     rag_results: list[dict[str, Any]] | None = None,
     rag_debug: list[dict[str, Any]] | None = None,
+    recent_log_selection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "scenario_id": scenario_id,
@@ -33,6 +34,7 @@ def latest_prompt_payload(
         "messages": messages,
         "message_count": len(messages),
         "character_count": sum(len(message.get("content", "")) for message in messages),
+        "recent_log_selection": recent_log_selection or {},
         "token_usage": estimate_prompt_token_usage(messages, profile.data),
         "rag_results": rag_results or [],
         "rag_debug": rag_debug or [],

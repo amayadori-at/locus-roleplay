@@ -21,6 +21,10 @@ class StatePatchError(StateSessionError):
     """Raised when a state patch output is malformed."""
 
 
+MAX_STATE_PATCH_BYTES = 64 * 1024
+DANGEROUS_STATE_KEYS = {"__proto__", "prototype", "constructor"}
+
+
 @dataclass(frozen=True)
 class SessionMetadata:
     session_id: str
@@ -31,10 +35,11 @@ class SessionMetadata:
     turn_count: int = 0
     created_at: str | None = None
     updated_at: str | None = None
+    start_id: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         now = _now_iso()
-        return {
+        data: dict[str, Any] = {
             "session_id": self.session_id,
             "scenario_id": self.scenario_id,
             "persona_id": self.persona_id,
@@ -44,6 +49,9 @@ class SessionMetadata:
             "created_at": self.created_at or now,
             "updated_at": self.updated_at or now,
         }
+        if self.start_id is not None:
+            data["start_id"] = self.start_id
+        return data
 
 
 def read_current_state(vault: Vault, scenario_id: str) -> dict[str, Any]:
@@ -94,8 +102,22 @@ def write_session_state(vault: Vault, scenario_id: str, session_id: str, state: 
     _write_json_file(vault, _session_state_path(scenario_id, session_id), state)
 
 
-def initialize_session_state(vault: Vault, scenario_id: str, session_id: str) -> dict[str, Any]:
-    state = read_initial_state(vault, scenario_id)
+def initialize_session_state(
+    vault: Vault,
+    scenario_id: str,
+    session_id: str,
+    source_vault_path: str | None = None,
+) -> dict[str, Any]:
+    if source_vault_path is not None:
+        source_file = vault.resolve(source_vault_path)
+        if not source_file.exists():
+            raise StateSessionError(f"Start initial state file not found: {source_vault_path}")
+        raw = vault.load_json(source_vault_path)
+        if not isinstance(raw, dict):
+            raise StateSessionError(f"Start initial state must be a JSON object: {source_vault_path}")
+        state = raw
+    else:
+        state = read_initial_state(vault, scenario_id)
     write_session_state(vault, scenario_id, session_id, state)
     write_session_state_snapshot(vault, scenario_id, session_id, 0, state)
     return state
@@ -161,6 +183,7 @@ def copy_session_state_for_turn(
 def apply_state_patch_output(vault: Vault, scenario_id: str, patch_output: str | dict[str, Any]) -> dict[str, Any]:
     current_state = read_current_state(vault, scenario_id)
     patch = parse_patch_output(patch_output)
+    validate_state_patch(current_state, patch)
     next_state = deep_merge(current_state, patch)
     write_current_state(vault, scenario_id, next_state)
     return next_state
@@ -174,6 +197,7 @@ def apply_session_state_patch_output(
 ) -> dict[str, Any]:
     current_state = read_session_state(vault, scenario_id, session_id)
     patch = parse_patch_output(patch_output)
+    validate_state_patch(current_state, patch)
     next_state = deep_merge(current_state, patch)
     write_session_state(vault, scenario_id, session_id, next_state)
     return next_state
@@ -193,6 +217,7 @@ def apply_session_state_patch_for_turn(
 
 def parse_patch_output(patch_output: str | dict[str, Any]) -> dict[str, Any]:
     if isinstance(patch_output, str):
+        _validate_patch_size(patch_output)
         try:
             parsed = json.loads(patch_output)
         except json.JSONDecodeError as exc:
@@ -207,7 +232,15 @@ def parse_patch_output(patch_output: str | dict[str, Any]) -> dict[str, Any]:
     patch = parsed["patch"]
     if not isinstance(patch, dict):
         raise StatePatchError("State patch field must be a JSON object")
+    _validate_patch_size(patch)
+    _validate_safe_json_value(patch, path="patch")
     return patch
+
+
+def validate_state_patch(current: dict[str, Any], patch: dict[str, Any]) -> None:
+    if not isinstance(current, dict) or not isinstance(patch, dict):
+        raise StatePatchError("State and patch must both be JSON objects")
+    _validate_patch_types(current, patch, path="patch")
 
 
 def deep_merge(current: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
@@ -224,7 +257,66 @@ def deep_merge(current: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]
     return merged
 
 
-def create_session(vault: Vault, metadata: SessionMetadata) -> dict[str, Any]:
+def _validate_patch_size(value: str | dict[str, Any]) -> None:
+    if isinstance(value, str):
+        size = len(value.encode("utf-8"))
+    else:
+        size = len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    if size > MAX_STATE_PATCH_BYTES:
+        raise StatePatchError("State patch output exceeds 64KB")
+
+
+def _validate_safe_json_value(value: Any, *, path: str) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if not isinstance(key, str):
+                raise StatePatchError(f"State patch key must be a string at {path}")
+            if key in DANGEROUS_STATE_KEYS:
+                raise StatePatchError(f"State patch contains dangerous key: {key}")
+            _validate_safe_json_value(child, path=f"{path}.{key}")
+        return
+    if isinstance(value, list):
+        for index, child in enumerate(value):
+            _validate_safe_json_value(child, path=f"{path}[{index}]")
+        return
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return
+    raise StatePatchError(f"State patch contains unsupported value at {path}")
+
+
+def _validate_patch_types(current: dict[str, Any], patch: dict[str, Any], *, path: str) -> None:
+    for key, patch_value in patch.items():
+        if key not in current:
+            continue
+        current_value = current[key]
+        if isinstance(current_value, dict) and isinstance(patch_value, dict):
+            _validate_patch_types(current_value, patch_value, path=f"{path}.{key}")
+            continue
+        if isinstance(current_value, dict) != isinstance(patch_value, dict):
+            raise StatePatchError(f"State patch would change object type at {path}.{key}")
+        if isinstance(current_value, list) != isinstance(patch_value, list):
+            raise StatePatchError(f"State patch would change array type at {path}.{key}")
+        if _json_scalar_type(current_value) != _json_scalar_type(patch_value):
+            raise StatePatchError(f"State patch would change value type at {path}.{key}")
+
+
+def _json_scalar_type(value: Any) -> type | tuple[type, ...] | None:
+    if isinstance(value, dict) or isinstance(value, list):
+        return None
+    if isinstance(value, bool):
+        return bool
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return (int, float)
+    if value is None:
+        return type(None)
+    return type(value)
+
+
+def create_session(
+    vault: Vault,
+    metadata: SessionMetadata,
+    initial_state_vault_path: str | None = None,
+) -> dict[str, Any]:
     _validate_id(metadata.scenario_id, "scenario")
     _validate_id(metadata.session_id, "session")
     data = metadata.to_json()
@@ -236,7 +328,7 @@ def create_session(vault: Vault, metadata: SessionMetadata) -> dict[str, Any]:
     if metadata_path.exists():
         raise StateSessionError(f"Session metadata already exists: {metadata.session_id}")
     session_dir.mkdir(parents=True, exist_ok=True)
-    initialize_session_state(vault, metadata.scenario_id, metadata.session_id)
+    initialize_session_state(vault, metadata.scenario_id, metadata.session_id, initial_state_vault_path)
     _write_json_file(vault, _session_metadata_path(metadata.scenario_id, metadata.session_id), data)
     log_path = vault.resolve(_session_log_path(metadata.scenario_id, metadata.session_id))
     log_path.touch(exist_ok=True)
