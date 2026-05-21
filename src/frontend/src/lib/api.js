@@ -190,6 +190,94 @@ export function deleteScenarioSourceFile(scenarioId, path) {
 /**
  * @param {string} scenarioId
  */
+export function listScenarioStarts(scenarioId) {
+  return apiJson(`/api/scenarios/${encodeURIComponent(scenarioId)}/starts`);
+}
+
+/**
+ * @param {string} scenarioId
+ * @param {{ id: string, name: string, body?: string }} payload
+ */
+export function createScenarioStart(scenarioId, payload) {
+  return apiJson(`/api/scenarios/${encodeURIComponent(scenarioId)}/starts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+}
+
+/**
+ * @param {string} scenarioId
+ * @param {string} startId
+ */
+export function deleteScenarioStart(scenarioId, startId) {
+  return apiJson(`/api/scenarios/${encodeURIComponent(scenarioId)}/starts/${encodeURIComponent(startId)}`, {
+    method: "DELETE"
+  });
+}
+
+/**
+ * @param {string} scenarioId
+ */
+export function getScenarioSettings(scenarioId) {
+  return apiJson(`/api/scenarios/${encodeURIComponent(scenarioId)}/settings`);
+}
+
+/**
+ * @param {string} scenarioId
+ * @param {{ prompt_graph_mode: string }} settings
+ */
+export function updateScenarioSettings(scenarioId, settings) {
+  return apiJson(`/api/scenarios/${encodeURIComponent(scenarioId)}/settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings)
+  });
+}
+
+/**
+ * @param {string} scenarioId
+ * @param {string} startId
+ */
+export function getStartPromptGraph(scenarioId, startId) {
+  return apiJson(`/api/scenarios/${encodeURIComponent(scenarioId)}/starts/${encodeURIComponent(startId)}/prompt-graph`);
+}
+
+/**
+ * @param {string} scenarioId
+ * @param {string} startId
+ * @param {Record<string, any>} graph
+ */
+export function updateStartPromptGraph(scenarioId, startId, graph) {
+  return apiJson(`/api/scenarios/${encodeURIComponent(scenarioId)}/starts/${encodeURIComponent(startId)}/prompt-graph`, {
+    method: "PUT",
+    body: JSON.stringify({ graph })
+  });
+}
+
+/**
+ * @param {string} scenarioId
+ * @param {string} startId
+ */
+export function getStartManifest(scenarioId, startId) {
+  return apiJson(`/api/scenarios/${encodeURIComponent(scenarioId)}/starts/${encodeURIComponent(startId)}/manifest`);
+}
+
+/**
+ * @param {string} scenarioId
+ * @param {string} startId
+ * @param {{ name: string, description: string, lore_include: string[], lore_exclude: string[], initial_state_path: string | null }} manifest
+ */
+export function updateStartManifest(scenarioId, startId, manifest) {
+  return apiJson(`/api/scenarios/${encodeURIComponent(scenarioId)}/starts/${encodeURIComponent(startId)}/manifest`, {
+    method: "PUT",
+    body: JSON.stringify(manifest)
+  });
+}
+
+/**
+ * @param {string} scenarioId
+ */
 export function getScenarioPromptGraph(scenarioId) {
   return apiJson(`/api/scenarios/${encodeURIComponent(scenarioId)}/prompt-graph`);
 }
@@ -212,7 +300,9 @@ export function updateScenarioPromptGraph(scenarioId, graph) {
  *   persona_id?: string,
  *   profile_id?: string,
  *   user_message: string,
- *   user_note?: string
+ *   user_note?: string,
+ *   session_note?: string,
+ *   scene_note?: string
  * }} params
  */
 export function getScenarioPromptPreview(scenarioId, params) {
@@ -345,7 +435,8 @@ export function deleteSession(scenarioId, sessionId) {
  *   summary_profile_id?: string | null,
  *   session_id?: string,
  *   display_name?: string,
- *   starting_id?: string | null
+ *   starting_id?: string | null,
+ *   start_id?: string | null
  * }} payload
  */
 export function createSession(payload) {
@@ -415,7 +506,18 @@ export function getSessionTimeline(scenarioId, sessionId) {
 /**
  * @param {string} scenarioId
  * @param {string} sessionId
- * @param {{ user_note?: string, display_name?: string, bookmarked_turns?: number[] }} payload
+ * @param {string} jobId
+ */
+export function getPostprocessJob(scenarioId, sessionId, jobId) {
+  return apiJson(
+    `/api/scenarios/${encodeURIComponent(scenarioId)}/sessions/${encodeURIComponent(sessionId)}/postprocess/${encodeURIComponent(jobId)}`
+  );
+}
+
+/**
+ * @param {string} scenarioId
+ * @param {string} sessionId
+ * @param {{ user_note?: string, session_note?: string, scene_note?: string, display_name?: string, bookmarked_turns?: number[] }} payload
  */
 export function updateSessionSettings(scenarioId, sessionId, payload) {
   return apiJson(
@@ -577,6 +679,72 @@ export function regenerateTurn(scenarioId, sessionId, turn, options = {}) {
 export async function regenerateTurnStream(scenarioId, sessionId, turn, options = {}) {
   const response = await fetch(
     `/api/scenarios/${encodeURIComponent(scenarioId)}/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(turn)}/regenerate`,
+    {
+      method: "POST",
+      headers: JSON_HEADERS,
+      signal: options.signal,
+      body: JSON.stringify({ stream: true })
+    }
+  );
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    let message = `HTTP ${response.status}`;
+    if (payload && typeof payload === "object") {
+      if ("message" in payload) {
+        message = String(payload.message);
+      } else if ("error" in payload) {
+        message = String(payload.error);
+      }
+    }
+    throw new ApiError(message, response.status, payload);
+  }
+  if (!response.body) {
+    throw new ApiError("Streaming response body is unavailable", response.status, {});
+  }
+
+  /** @type {any} */
+  let finalData = null;
+  await consumeSseStream(response, {
+    createError: (data) => new ApiError(String(data.message || data.error || "Stream failed"), 200, data),
+    onEvent(event) {
+      if (event.event === "delta" && typeof event.data.delta === "string") {
+        options.onDelta?.(event.data.delta);
+      } else if (event.event === "final") {
+        finalData = event.data;
+        return "stop";
+      }
+    }
+  });
+  if (finalData) return finalData;
+  throw new ApiError("Streaming response did not include final turn payload", response.status, {});
+}
+
+/**
+ * @param {string} scenarioId
+ * @param {string} sessionId
+ * @param {number} turn
+ * @param {{ signal?: AbortSignal, stream?: boolean }} [options]
+ */
+export function continueTurn(scenarioId, sessionId, turn, options = {}) {
+  return apiJson(
+    `/api/scenarios/${encodeURIComponent(scenarioId)}/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(turn)}/continue`,
+    {
+      method: "POST",
+      signal: options.signal,
+      body: JSON.stringify({ stream: Boolean(options.stream) })
+    }
+  );
+}
+
+/**
+ * @param {string} scenarioId
+ * @param {string} sessionId
+ * @param {number} turn
+ * @param {{ signal?: AbortSignal, onDelta?: (delta: string) => void }} [options]
+ */
+export async function continueTurnStream(scenarioId, sessionId, turn, options = {}) {
+  const response = await fetch(
+    `/api/scenarios/${encodeURIComponent(scenarioId)}/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(turn)}/continue`,
     {
       method: "POST",
       headers: JSON_HEADERS,

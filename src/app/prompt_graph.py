@@ -22,6 +22,7 @@ PROMPT_GRAPH_NODE_TYPES = frozenset(
         "pinned_characters",
         "session_log",
         "user_note",
+        "scene_note",
         "current_user_message",
         "condition",
         "output",
@@ -72,6 +73,7 @@ def default_prompt_graph() -> dict[str, Any]:
                 "order": 90,
                 "condition": {"scenario.image_enabled": True},
             },
+            _node("scene_note", "scene_note", 95, role="system", required=False),
             _node("recent_log", "session_log", 100, role="messages", required=True, token_budget=12000),
             _node("current_user_message", "current_user_message", 110, role="user", required=True),
         ],
@@ -89,17 +91,17 @@ def read_prompt_graph(vault: Vault, scenario_id: str) -> dict[str, Any]:
     except VaultFileError as exc:
         raise PromptGraphError(f"Prompt graph is unreadable: {_prompt_graph_path(scenario_id)}") from exc
     validated = validate_prompt_graph(vault, scenario_id, raw)
-    return _inject_missing_pin_nodes(validated)
+    return _inject_missing_builtin_nodes(validated)
 
 
-def _inject_missing_pin_nodes(graph: dict[str, Any]) -> dict[str, Any]:
-    """Add active_mods / pinned_characters nodes when they are absent from a stored graph.
+def _inject_missing_builtin_nodes(graph: dict[str, Any]) -> dict[str, Any]:
+    """Add newer built-in optional nodes when they are absent from a stored graph.
 
-    This silently upgrades graphs saved before these node types were introduced, without
-    modifying the file on disk.  Duplicate-order conflicts are resolved by bumping by 1.
+    This silently upgrades older graphs without modifying the file on disk.
+    Duplicate-order conflicts are resolved by bumping by 1.
     """
     existing_types = {node["type"] for node in graph.get("nodes", [])}
-    if "active_mods" in existing_types and "pinned_characters" in existing_types:
+    if {"active_mods", "pinned_characters", "scene_note"}.issubset(existing_types):
         return graph
 
     existing_orders = {node["order"] for node in graph.get("nodes", [])}
@@ -116,6 +118,8 @@ def _inject_missing_pin_nodes(graph: dict[str, Any]) -> dict[str, Any]:
         nodes.append(_node("active_mods", "active_mods", _safe_order(45), role="system", required=False))
     if "pinned_characters" not in existing_types:
         nodes.append(_node("pinned_characters", "pinned_characters", _safe_order(77), role="system", required=False))
+    if "scene_note" not in existing_types:
+        nodes.append(_node("scene_note", "scene_note", _safe_order(95), role="system", required=False))
 
     return {**graph, "nodes": sorted(nodes, key=lambda n: (n["order"], n["id"]))}
 
@@ -353,6 +357,49 @@ def _node(node_id: str, node_type: str, order: int, **extra: Any) -> dict[str, A
     return {"id": node_id, "type": node_type, "order": order, **extra}
 
 
+def has_start_prompt_graph(vault: Vault, scenario_id: str, start_id: str) -> bool:
+    _validate_scenario_id(scenario_id)
+    _validate_start_id(start_id)
+    return vault.resolve(_start_prompt_graph_path(scenario_id, start_id)).exists()
+
+
+def read_start_prompt_graph(vault: Vault, scenario_id: str, start_id: str) -> dict[str, Any]:
+    _validate_scenario_id(scenario_id)
+    _validate_start_id(start_id)
+    path = _start_prompt_graph_path(scenario_id, start_id)
+    if not vault.resolve(path).exists():
+        base = read_prompt_graph(vault, scenario_id)
+        return {"graph": base, "own_graph": False, "source": "scenario"}
+    try:
+        raw = vault.load_json(path)
+    except VaultFileError as exc:
+        raise PromptGraphError(f"Start prompt graph is unreadable: {path}") from exc
+    validated = validate_prompt_graph(vault, scenario_id, raw)
+    graph = _inject_missing_builtin_nodes(validated)
+    return {"graph": graph, "own_graph": True, "source": "start"}
+
+
+def write_start_prompt_graph(vault: Vault, scenario_id: str, start_id: str, graph: dict[str, Any]) -> dict[str, Any]:
+    _validate_scenario_id(scenario_id)
+    _validate_start_id(start_id)
+    normalized = validate_prompt_graph(vault, scenario_id, graph)
+    path = vault.resolve(_start_prompt_graph_path(scenario_id, start_id))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = json.dumps(normalized, ensure_ascii=False, indent=2) + "\n"
+    temp_path = path.with_name(f".{path.name}.tmp")
+    try:
+        temp_path.write_text(raw, encoding="utf-8")
+        temp_path.replace(path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+    return normalized
+
+
+def _start_prompt_graph_path(scenario_id: str, start_id: str) -> str:
+    return f"rp/scenarios/{scenario_id}/startings/{start_id}/prompt_graph.json"
+
+
 def _prompt_graph_path(scenario_id: str) -> str:
     return f"rp/scenarios/{scenario_id}/prompt_graph.json"
 
@@ -360,3 +407,8 @@ def _prompt_graph_path(scenario_id: str) -> str:
 def _validate_scenario_id(scenario_id: str) -> None:
     if not is_locus_id(scenario_id):
         raise PromptGraphError(f"Invalid scenario id: {scenario_id}")
+
+
+def _validate_start_id(start_id: str) -> None:
+    if not is_locus_id(start_id):
+        raise PromptGraphError(f"Invalid start id: {start_id}")

@@ -13,6 +13,11 @@ class RagDocumentError(Exception):
     pass
 
 
+KEYWORD_TRIGGER_LIMIT = 4
+KEYWORD_TRIGGER_MESSAGE_LIMIT = 8
+DEFAULT_KEYWORD_TRIGGER_TOKEN_BUDGET = 1200
+
+
 @dataclass(frozen=True)
 class RagDocument:
     source_path: str
@@ -68,6 +73,110 @@ def list_available_characters(vault: Vault, scenario_id: str) -> list[dict[str, 
         metadata = dict(document.frontmatter)
         results.append({"path": scenario_relative, "title": document_title(path, metadata)})
     return results
+
+
+def list_keyword_lore_documents(vault: Vault, scenario_id: str) -> tuple[list[RagDocument], list[str]]:
+    """List lore files that define keyword triggers.
+
+    Unlike normal RAG documents, keyword-triggered lore intentionally ignores
+    frontmatter rag: false. keywords_enabled: false is the explicit opt-out.
+    """
+    if not is_locus_id(scenario_id):
+        raise RagDocumentError(f"Invalid scenario id: {scenario_id}")
+    base = vault.resolve(f"rp/scenarios/{scenario_id}")
+    if not base.is_dir():
+        raise RagDocumentError(f"Scenario directory does not exist: {scenario_id}")
+    lore_dir = base / "lore"
+    if not lore_dir.is_dir():
+        return [], []
+
+    documents: list[RagDocument] = []
+    warnings: list[str] = []
+    for path in sorted(lore_dir.glob("*.md")):
+        relative = path.relative_to(vault.root).as_posix()
+        scenario_relative = path.relative_to(base).as_posix()
+        try:
+            document = vault.load_markdown(relative)
+        except VaultFileError as exc:
+            raise RagDocumentError(f"Keyword lore markdown is unreadable: {scenario_relative}") from exc
+        metadata = dict(document.frontmatter)
+        if metadata.get("keywords_enabled") is False:
+            continue
+        keywords = _keyword_list(metadata.get("keywords"), source_path=scenario_relative)
+        if not keywords:
+            continue
+        one_char = [keyword for keyword in keywords if len(keyword) == 1]
+        if one_char:
+            warnings.append(f"{scenario_relative}: 1-character keyword(s): {', '.join(one_char)}")
+        documents.append(
+            RagDocument(
+                source_path=scenario_relative,
+                type=document_type("lore", metadata),
+                title=document_title(path, metadata),
+                body=document.body.strip(),
+                metadata={**metadata, "keywords": keywords},
+            )
+        )
+    return documents, warnings
+
+
+def keyword_trigger_messages(
+    *,
+    user_message: str,
+    recent_log: list[dict[str, Any]] | None = None,
+    limit: int = KEYWORD_TRIGGER_MESSAGE_LIMIT,
+) -> list[str]:
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+        limit = KEYWORD_TRIGGER_MESSAGE_LIMIT
+    messages: list[str] = []
+    for entry in recent_log or []:
+        content = entry.get("content")
+        if isinstance(content, str) and content.strip():
+            messages.append(content)
+    if isinstance(user_message, str) and user_message.strip():
+        messages.append(user_message)
+    return messages[-limit:]
+
+
+def keyword_triggered_lore_results(
+    vault: Vault,
+    scenario_id: str,
+    *,
+    user_message: str,
+    recent_log: list[dict[str, Any]] | None = None,
+    limit: int = KEYWORD_TRIGGER_LIMIT,
+    exclude_paths: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    documents, warnings = list_keyword_lore_documents(vault, scenario_id)
+    messages = [message.lower() for message in keyword_trigger_messages(user_message=user_message, recent_log=recent_log)]
+    if not documents or not messages:
+        return [], warnings
+    excluded = exclude_paths or set()
+    results: list[dict[str, Any]] = []
+    for document in documents:
+        if document.source_path in excluded:
+            continue
+        keywords = _keyword_list(document.metadata.get("keywords"), source_path=document.source_path)
+        matched = [keyword for keyword in keywords if any(keyword.lower() in message for message in messages)]
+        if not matched:
+            continue
+        priority = _priority(document.metadata)
+        results.append(
+            {
+                "source_path": document.source_path,
+                "type": document.type,
+                "title": document.title,
+                "score": priority,
+                "content": document.body.strip(),
+                "metadata": document.metadata,
+                "matched_terms": matched,
+                "matched_keywords": matched,
+                "match_type": "keyword",
+                "priority": priority,
+            }
+        )
+    results.sort(key=lambda item: (-item["priority"], item["source_path"]))
+    return results[:limit], warnings
 
 
 def load_scenario_file(vault: Vault, scenario_id: str, scenario_relative_path: str) -> RagDocument | None:
@@ -179,3 +288,29 @@ def document_title(path: Path, metadata: dict[str, Any]) -> str:
         if isinstance(value, str) and value.strip():
             return value
     return path.stem
+
+
+def _keyword_list(value: object, *, source_path: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise RagDocumentError(f"{source_path}: keywords must be a list")
+    keywords: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            raise RagDocumentError(f"{source_path}: keywords must contain strings only")
+        keyword = item.strip()
+        if not keyword:
+            raise RagDocumentError(f"{source_path}: keywords must not contain empty strings")
+        if keyword not in seen:
+            seen.add(keyword)
+            keywords.append(keyword)
+    return keywords
+
+
+def _priority(metadata: dict[str, Any]) -> int | float:
+    value = metadata.get("priority")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value
+    return 0

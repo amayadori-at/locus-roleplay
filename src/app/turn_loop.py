@@ -181,17 +181,20 @@ def prepare_gm_turn(
     scenario = load_scenario(vault, scenario_id)
     profile = load_profile(vault, rp_profile_id)
     if recent_log_override is not None:
-        recent_log = recent_log_override[-recent_limit:] if recent_limit else recent_log_override
+        raw_recent_log = recent_log_override
     else:
-        recent_log = read_session_log(vault, scenario_id, session_id, limit=recent_limit)
+        raw_recent_log = read_session_log(vault, scenario_id, session_id)
     prompt = compose_prompt_graph(
         vault,
         scenario_id=scenario_id,
         session_id=session_id,
         user_message=user_message,
         recent_limit=recent_limit,
-        recent_log_override=recent_log,
+        recent_log_override=raw_recent_log,
     )
+    recent_log = prompt.get("selected_recent_log")
+    if not isinstance(recent_log, list):
+        recent_log = raw_recent_log[-recent_limit:] if recent_limit else raw_recent_log
     return TurnPreparation(
         metadata=metadata,
         scenario=scenario,
@@ -225,6 +228,7 @@ def finalize_gm_turn(
             messages=prepared.messages,
             rag_results=_prompt_rag_results(prepared.prompt),
             rag_debug=_prompt_rag_debug(prepared.prompt),
+            recent_log_selection=_prompt_recent_log_selection(prepared.prompt),
         ),
     )
     segments = parse_image_markers(assistant_content, scenario=prepared.scenario, vault=vault)
@@ -245,7 +249,7 @@ def finalize_gm_turn(
         state_model_client=state_model_client,
     )
 
-    updated_metadata = dict(prepared.metadata)
+    updated_metadata = read_session_metadata(vault, scenario_id, session_id)
     updated_metadata["turn_count"] = prepared.turn
     updated_metadata["updated_at"] = _now_iso()
     write_session_metadata(vault, scenario_id, session_id, updated_metadata)
@@ -287,6 +291,7 @@ def finalize_gm_turn_fast(
             messages=prepared.messages,
             rag_results=_prompt_rag_results(prepared.prompt),
             rag_debug=_prompt_rag_debug(prepared.prompt),
+            recent_log_selection=_prompt_recent_log_selection(prepared.prompt),
         ),
     )
     segments = parse_image_markers(assistant_content, scenario=prepared.scenario, vault=vault)
@@ -429,6 +434,11 @@ def _prompt_rag_debug(prompt: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return debug
+
+
+def _prompt_recent_log_selection(prompt: dict[str, Any]) -> dict[str, Any]:
+    value = prompt.get("recent_log_selection")
+    return value if isinstance(value, dict) else {}
 
 
 def _next_turn(metadata: dict[str, Any]) -> int:

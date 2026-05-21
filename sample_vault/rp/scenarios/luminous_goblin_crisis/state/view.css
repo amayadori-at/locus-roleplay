@@ -24,27 +24,34 @@ body {
 
 code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; }
 
-.state-view { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 36px 0 56px; }
+/* ===== Container Query のルート ===== */
+.state-view {
+  width: min(1180px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 28px 0 48px;
+  container-type: inline-size;
+  container-name: sv;
+}
 
 .page-header {
   display: flex;
   justify-content: space-between;
-  gap: 24px;
+  flex-wrap: wrap;
+  gap: 20px;
   align-items: flex-start;
-  margin-bottom: 24px;
-  padding: 28px;
+  margin-bottom: 20px;
+  padding: 22px 24px;
   border: 1px solid var(--line);
   border-radius: calc(var(--radius) + 8px);
   background: rgba(255, 250, 241, 0.88);
   box-shadow: var(--shadow);
 }
 
-.eyebrow { margin: 0 0 6px; color: var(--accent); font-size: 0.78rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
+.eyebrow { margin: 0 0 5px; color: var(--accent); font-size: 0.78rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
 h1, h2, h3, p { margin-top: 0; }
-h1 { margin-bottom: 8px; font-size: clamp(1.8rem, 4vw, 3rem); line-height: 1.15; }
-h2 { margin-bottom: 14px; font-size: 1.15rem; }
+h1 { margin-bottom: 6px; font-size: clamp(1.5rem, 4vw, 2.6rem); line-height: 1.2; }
+h2 { margin-bottom: 12px; font-size: 1.1rem; }
 h3 { margin-bottom: 10px; font-size: 1rem; }
-.subtitle { max-width: 760px; margin-bottom: 0; color: var(--muted); }
 
 .status-pill, .tag, .flag {
   display: inline-flex;
@@ -61,31 +68,33 @@ h3 { margin-bottom: 10px; font-size: 1rem; }
 }
 
 .status-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent-2); box-shadow: 0 0 0 4px rgba(47, 95, 87, 0.12); }
-.grid { display: grid; gap: 18px; margin-bottom: 18px; }
+.grid { display: grid; gap: 16px; margin-bottom: 16px; }
 .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.card { border: 1px solid var(--line); border-radius: var(--radius); background: rgba(255, 250, 241, 0.92); box-shadow: var(--shadow); padding: 22px; }
-.wide { margin-bottom: 18px; }
-.main-value { margin-bottom: 4px; font-size: 1.28rem; font-weight: 700; }
+.card { border: 1px solid var(--line); border-radius: var(--radius); background: rgba(255, 250, 241, 0.92); box-shadow: var(--shadow); padding: 20px; }
+.wide { margin-bottom: 16px; }
+.main-value { margin-bottom: 4px; font-size: 1.2rem; font-weight: 700; }
 .sub-value { margin-bottom: 0; color: var(--muted); }
-.meta-row, .bar-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid rgba(216, 201, 180, 0.72); }
-.meta-row:first-of-type { border-top: 0; }
+.meta-row, .bar-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid rgba(216, 201, 180, 0.72); }
+.meta-row { justify-content: space-between; }
+.meta-row:first-of-type, .bar-row:first-of-type { border-top: 0; }
+.bar-row meter { flex: 1; min-width: 0; }
 .meta-row span, .bar-row span, dt { color: var(--muted); }
-.section-header { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 16px; }
-.progress-grid, .character-grid, .relationship-grid, .flag-grid { display: grid; gap: 14px; }
+.section-header { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 14px; }
+.progress-grid, .character-grid, .relationship-grid, .flag-grid { display: grid; gap: 12px; }
 .progress-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
-.progress-item { padding: 16px 12px; border: 1px solid var(--line); border-radius: 14px; background: #fbf3e6; text-align: center; }
+.progress-item { padding: 14px 10px; border: 1px solid var(--line); border-radius: 14px; background: #fbf3e6; text-align: center; }
 .count { display: block; font-size: 1.7rem; font-weight: 800; line-height: 1.1; }
 .label { display: block; margin-top: 4px; color: var(--muted); font-size: 0.82rem; }
 .list { margin: 0; padding-left: 1.2em; }
 .list li { margin: 4px 0; }
 .character-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.character-card, .relationship-card { border: 1px solid var(--line); border-radius: 14px; background: #fbf3e6; padding: 16px; }
-dl { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 6px 10px; margin: 0; }
+.character-card, .relationship-card { border: 1px solid var(--line); border-radius: 14px; background: #fbf3e6; padding: 14px; }
+dl { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 6px 10px; margin: 0; }
 dd { margin: 0; font-weight: 700; overflow-wrap: anywhere; }
 .relationship-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.relationship-card p { margin: 12px 0 0; color: var(--muted); font-size: 0.92rem; }
-meter { width: 100%; height: 12px; }
+.relationship-card p { margin: 10px 0 0; color: var(--muted); font-size: 0.88rem; line-height: 1.55; }
+meter { height: 12px; }
 meter::-webkit-meter-bar { border: 1px solid var(--line); border-radius: 999px; background: var(--surface); }
 meter::-webkit-meter-optimum-value { border-radius: 999px; background: var(--accent-2); }
 .flag-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
@@ -93,7 +102,7 @@ meter::-webkit-meter-optimum-value { border-radius: 999px; background: var(--acc
 .flag[data-value="true"], .flag.is-true { border-color: rgba(47, 95, 87, 0.45); background: rgba(47, 95, 87, 0.12); color: var(--accent-2); }
 .flag[data-value="false"], .flag.is-false { border-color: rgba(138, 59, 46, 0.28); background: rgba(138, 59, 46, 0.08); color: var(--danger); }
 
-/* Image gallery */
+/* ===== Image gallery ===== */
 .image-gallery { border: none; }
 .gallery-summary {
   display: flex;
@@ -113,21 +122,181 @@ meter::-webkit-meter-optimum-value { border-radius: 999px; background: var(--acc
   transition: transform 0.2s ease;
 }
 details[open] > .gallery-summary::before { transform: rotate(90deg); }
-.gallery-body { display: flex; flex-direction: column; gap: 28px; margin-top: 20px; }
-.gallery-character h3 { margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
-.gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 12px; }
+.gallery-body { display: flex; flex-direction: column; gap: 24px; margin-top: 18px; }
+.gallery-character h3 { margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; }
 .gallery-item { margin: 0; text-align: center; }
 .gallery-item img { width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-2); display: block; object-fit: contain; }
 .gallery-item figcaption { margin-top: 6px; font-size: 0.82rem; color: var(--muted); }
 
+/* =============================================
+   Container Queries — State列埋め込み対応
+   ビューポート幅に依存しないコンテナサイズ基準
+   ============================================= */
+
+/* 960px以下: progress-grid を3列に */
+@container sv (max-width: 960px) {
+  .progress-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+/* 720px以下: character・relationship・flag を圧縮 */
+@container sv (max-width: 720px) {
+  .character-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .relationship-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .flag-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+/* 540px以下: State列デスクトップ表示の主要ターゲット（幅260-360px） */
+@container sv (max-width: 540px) {
+  .state-view { padding: 14px 0 24px; }
+
+  .page-header {
+    flex-direction: row;
+    align-items: center;
+    padding: 12px 14px;
+    gap: 10px;
+    margin-bottom: 12px;
+    border-radius: var(--radius);
+  }
+
+  h1 { font-size: 1rem; line-height: 1.25; margin-bottom: 2px; }
+  h2 { font-size: 0.88rem; margin-bottom: 8px; }
+  h3 { font-size: 0.84rem; margin-bottom: 6px; }
+  .eyebrow { font-size: 0.68rem; margin-bottom: 2px; }
+
+  .status-pill { font-size: 0.78rem; padding: 5px 9px; }
+  .tag, .flag { font-size: 0.78rem; padding: 5px 8px; }
+  .status-dot { width: 8px; height: 8px; }
+
+  .grid { gap: 10px; margin-bottom: 10px; }
+  .card { padding: 12px; border-radius: 12px; }
+  .wide { margin-bottom: 10px; }
+
+  /* 現在地/シーン/王国状況: 1列 + 2列で交互に */
+  .grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* 完了/未完了ステップ: 1列に */
+  .grid-2 { grid-template-columns: 1fr; }
+
+  .main-value { font-size: 1rem; }
+  .sub-value { font-size: 0.82rem; }
+  .meta-row, .bar-row { padding: 6px 0; gap: 8px; }
+  .meta-row span, .bar-row span { font-size: 0.82rem; }
+
+  .section-header { flex-direction: row; align-items: center; margin-bottom: 10px; }
+
+  /* クエスト進行: 3列 */
+  .progress-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .progress-item { padding: 10px 6px; border-radius: 10px; }
+  .count { font-size: 1.35rem; }
+  .label { font-size: 0.75rem; }
+
+  /* キャラクター: 2列 */
+  .character-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .character-card { padding: 10px; border-radius: 10px; }
+  dl { grid-template-columns: 46px minmax(0, 1fr); gap: 4px 8px; font-size: 0.84rem; }
+
+  /* 関係値: 1列 */
+  .relationship-grid { grid-template-columns: 1fr; gap: 8px; }
+  .relationship-card { padding: 10px; border-radius: 10px; }
+  .relationship-card p { font-size: 0.82rem; margin-top: 8px; }
+  .bar-row meter { height: 10px; }
+
+  /* フラグ: 3列（小さいタグが3列で並ぶ） */
+  .flag-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+
+  /* ギャラリー */
+  .gallery-grid { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 8px; }
+}
+
+/* 380px以下: 最も狭い幅向けの微調整 */
+@container sv (max-width: 380px) {
+  h1 { font-size: 0.9rem; }
+  .page-header { padding: 10px 12px; }
+  .card { padding: 10px; }
+
+  .grid-3 { grid-template-columns: 1fr; }
+  .flag-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+  dl { grid-template-columns: 42px minmax(0, 1fr); font-size: 0.8rem; }
+  .count { font-size: 1.2rem; }
+  .label { font-size: 0.72rem; }
+}
+
+/* =============================================
+   従来のメディアクエリ（独立ページとして開く場合）
+   ============================================= */
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg:       #1a1714;
+    --surface:  #231e16;
+    --surface-2: #2e2518;
+    --ink:      #e0d8c8;
+    --muted:    #9a8a70;
+    --line:     #3a3028;
+    --accent:   #b08040;
+    --accent-2: #3f8878;
+    --danger:   #c05040;
+    --shadow:   0 14px 36px rgba(0, 0, 0, 0.40);
+  }
+
+  body {
+    background:
+      radial-gradient(circle at top left, rgba(176, 128, 64, 0.10), transparent 32rem),
+      linear-gradient(180deg, #1e1a14 0%, var(--bg) 100%);
+  }
+
+  /* 半透明の白ベース背景 → サーフェス系に置換 */
+  .page-header {
+    background: rgba(35, 30, 22, 0.92);
+  }
+
+  .card {
+    background: rgba(35, 30, 22, 0.95);
+  }
+
+  /* 区切り線のrgba白 → ダーク寄りに */
+  .meta-row, .bar-row {
+    border-top-color: rgba(58, 48, 40, 0.9);
+  }
+
+  /* ハードコード #fbf3e6 (progress-item / character-card / relationship-card) */
+  .progress-item { background: #2a2218; }
+  .character-card, .relationship-card { background: #2a2218; }
+
+  /* ハードコード #f7efe2 (flag デフォルト) */
+  .flag { background: #2a2418; }
+
+  /* フラグ状態: 元のrgba値をダーク対応の色で上書き */
+  .flag[data-value="true"], .flag.is-true {
+    border-color: rgba(63, 136, 120, 0.50);
+    background:   rgba(63, 136, 120, 0.18);
+  }
+  .flag[data-value="false"], .flag.is-false {
+    border-color: rgba(192, 80, 64, 0.38);
+    background:   rgba(192, 80, 64, 0.14);
+  }
+
+  /* status-dot のアクセント系グロー */
+  .status-dot {
+    box-shadow: 0 0 0 4px rgba(63, 136, 120, 0.20);
+  }
+
+  /* meter の webkit スタイル */
+  meter::-webkit-meter-bar {
+    background: var(--surface-2);
+  }
+}
+
 @media (max-width: 980px) {
-  .grid-3, .progress-grid, .character-grid, .relationship-grid, .flag-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .page-header { flex-direction: column; }
 }
 
 @media (max-width: 640px) {
   .state-view { width: min(100% - 20px, 1180px); padding-top: 20px; }
-  .grid-2, .grid-3, .progress-grid, .character-grid, .relationship-grid, .flag-grid { grid-template-columns: 1fr; }
-  .page-header, .card { padding: 18px; }
+  .grid-2, .grid-3, .character-grid, .relationship-grid, .flag-grid { grid-template-columns: 1fr; }
+  .progress-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .page-header, .card { padding: 16px; }
   .section-header { align-items: flex-start; flex-direction: column; }
 }

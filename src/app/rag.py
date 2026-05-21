@@ -4,11 +4,17 @@ from typing import Any
 
 from app.embedding import EmbeddingConfig, embed_texts
 from app.rag_documents import (
+    DEFAULT_KEYWORD_TRIGGER_TOKEN_BUDGET,
+    KEYWORD_TRIGGER_LIMIT,
+    KEYWORD_TRIGGER_MESSAGE_LIMIT,
     RagDocument,
     RagDocumentError,
     build_rag_query as _build_rag_query,
+    keyword_trigger_messages as _keyword_trigger_messages,
+    keyword_triggered_lore_results as _keyword_triggered_lore_results,
     list_available_characters as _list_available_characters,
     list_available_mods as _list_available_mods,
+    list_keyword_lore_documents as _list_keyword_lore_documents,
     list_rag_documents as _list_rag_documents,
     load_scenario_file as _load_scenario_file,
 )
@@ -106,6 +112,44 @@ def list_rag_documents(
         return _list_rag_documents(vault, scenario_id, sources=sources)
     except RagDocumentError as exc:
         raise RagError(str(exc)) from exc
+
+
+def list_keyword_lore_documents(vault: Vault, scenario_id: str) -> tuple[list[RagDocument], list[str]]:
+    try:
+        return _list_keyword_lore_documents(vault, scenario_id)
+    except RagDocumentError as exc:
+        raise RagError(str(exc)) from exc
+
+
+def keyword_triggered_lore_results(
+    vault: Vault,
+    scenario_id: str,
+    *,
+    user_message: str,
+    recent_log: list[dict[str, Any]] | None = None,
+    limit: int = KEYWORD_TRIGGER_LIMIT,
+    exclude_paths: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    try:
+        return _keyword_triggered_lore_results(
+            vault,
+            scenario_id,
+            user_message=user_message,
+            recent_log=recent_log,
+            limit=limit,
+            exclude_paths=exclude_paths,
+        )
+    except RagDocumentError as exc:
+        raise RagError(str(exc)) from exc
+
+
+def keyword_trigger_messages(
+    *,
+    user_message: str,
+    recent_log: list[dict[str, Any]] | None = None,
+    limit: int = KEYWORD_TRIGGER_MESSAGE_LIMIT,
+) -> list[str]:
+    return _keyword_trigger_messages(user_message=user_message, recent_log=recent_log, limit=limit)
 
 
 def build_rag_query(

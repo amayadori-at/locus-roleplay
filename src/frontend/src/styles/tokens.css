@@ -1,0 +1,91 @@
+/* Design tokens — light mode (default) and dark mode overrides */
+
+:root {
+  /* Backgrounds */
+  --c-bg:           #f4f0e7;
+  --c-sidebar:      #ede6d9;
+  --c-surface:      #fbf7ef;
+  --c-surface-2:    #fffdf8;
+  --c-surface-alt:  #fffaf2;
+  --c-selected:     #edf7f3;
+
+  /* Borders */
+  --c-border:       #d8d0c0;
+  --c-border-2:     #cfc5b4;
+
+  /* Text */
+  --c-text:         #1f2725;
+  --c-text-mid:     #384541;
+  --c-text-muted:   #65716d;
+  --c-text-warm:    #8c7c60;
+
+  /* Accent */
+  --c-accent:       #3f635d;
+  --c-accent-light: #4f766f;
+
+  /* Semantic */
+  --c-danger:       #8d3128;
+  --c-danger-bg:    #fff1ed;
+
+  /* Scrollbar */
+  --c-scrollbar:       #c8bfb0;
+  --c-scrollbar-hover: #a89f90;
+
+  /* Shadows */
+  --c-shadow-xs:          rgba(31, 39, 37, 0.04);
+  --c-shadow-sm:          rgba(31, 39, 37, 0.08);
+  --c-shadow:             rgba(31, 39, 37, 0.12);
+  --c-shadow-md:          rgba(31, 39, 37, 0.18);
+  --c-shadow-lg:          rgba(31, 39, 37, 0.26);
+  --c-accent-xs:          rgba(63, 99, 93, 0.04);
+  --c-accent-ring:        rgba(63, 99, 93, 0.12);
+  --c-accent-ring-strong: rgba(63, 99, 93, 0.18);
+
+  /* Overlays / modal backgrounds */
+  --c-scrim:       rgb(31 39 37 / 42%);
+  --c-picker-bg:   rgb(255 250 242 / 72%);
+  --c-picker-bg-2: rgb(255 250 242 / 86%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    --c-bg:           #181e1c;
+    --c-sidebar:      #1c2220;
+    --c-surface:      #222927;
+    --c-surface-2:    #283130;
+    --c-surface-alt:  #212e2b;
+    --c-selected:     #1a3530;
+
+    --c-border:       #2d3d3a;
+    --c-border-2:     #283733;
+
+    --c-text:         #ddd8cf;
+    --c-text-mid:     #afc0bb;
+    --c-text-muted:   #89999a;
+    --c-text-warm:    #9e8f74;
+
+    --c-accent:       #5a9e96;
+    --c-accent-light: #6db5ad;
+
+    --c-danger:       #c4584e;
+    --c-danger-bg:    #2b1a18;
+
+    --c-scrollbar:       #3a4a46;
+    --c-scrollbar-hover: #4d6460;
+
+    --c-shadow-xs:          rgba(0, 0, 0, 0.10);
+    --c-shadow-sm:          rgba(0, 0, 0, 0.25);
+    --c-shadow:             rgba(0, 0, 0, 0.35);
+    --c-shadow-md:          rgba(0, 0, 0, 0.50);
+    --c-shadow-lg:          rgba(0, 0, 0, 0.60);
+    --c-accent-xs:          rgba(90, 158, 150, 0.08);
+    --c-accent-ring:        rgba(90, 158, 150, 0.20);
+    --c-accent-ring-strong: rgba(90, 158, 150, 0.25);
+
+    --c-scrim:       rgb(0 0 0 / 55%);
+    --c-picker-bg:   rgb(30 42 38 / 88%);
+    --c-picker-bg-2: rgb(30 42 38 / 95%);
+  }
+}

@@ -1,9 +1,11 @@
 <script>
   import { RefreshCcw } from "lucide-svelte";
   import { renderMarkdown } from "./markdown.js";
+  import { t, translateNow } from "./i18n.js";
 
   export let scenarioId = "";
-  export let userNoteDraft = "";
+  export let sessionNoteDraft = "";
+  export let sceneNoteDraft = "";
   export let settingsSaving = false;
   export let settingsMessage = "";
   export let saveSessionSettings = () => {};
@@ -43,6 +45,18 @@
     return promptPreview?.prompt?.token_usage || null;
   }
 
+  function tokenUsageWarning() {
+    const usage = tokenUsage();
+    if (!usage || typeof usage.total_context_ratio !== "number") return "";
+    if (usage.total_context_ratio >= 1) {
+      return translateNow("settings.contextOverflow");
+    }
+    if (usage.total_context_ratio >= 0.9) {
+      return translateNow("settings.contextNear90");
+    }
+    return "";
+  }
+
   function ragDebug() {
     return promptPreview?.prompt?.rag_debug || [];
   }
@@ -72,7 +86,7 @@
    * @param {number | null | undefined} value
    */
   function formatNumber(value) {
-    return typeof value === "number" && Number.isFinite(value) ? value.toLocaleString() : "未記録";
+    return typeof value === "number" && Number.isFinite(value) ? value.toLocaleString() : translateNow("common.unrecorded");
   }
 
   /**
@@ -80,7 +94,7 @@
    */
   function formatRatio(value) {
     if (typeof value !== "number" || !Number.isFinite(value)) {
-      return "未記録";
+      return translateNow("common.unrecorded");
     }
     return `${Math.round(value * 1000) / 10}%`;
   }
@@ -88,16 +102,23 @@
 
 <div class="modal-grid">
   <section class="modal-section">
-    <h4>User Note</h4>
+    <h4>Session Note</h4>
     <textarea
       class="settings-textarea"
-      bind:value={userNoteDraft}
-      placeholder="このセッションだけに効かせたい補足メモ"
+      bind:value={sessionNoteDraft}
+      placeholder={$t("settings.sessionNotePlaceholder")}
       rows="6"
+    ></textarea>
+    <h4>Scene Note</h4>
+    <textarea
+      class="settings-textarea"
+      bind:value={sceneNoteDraft}
+      placeholder={$t("settings.sceneNotePlaceholder")}
+      rows="4"
     ></textarea>
     <div class="modal-actions">
       <button type="button" disabled={settingsSaving} onclick={() => void saveSessionSettings()}>
-        {settingsSaving ? "保存中" : "変更を保存"}
+        {settingsSaving ? $t("settings.saving") : $t("settings.saveSettings")}
       </button>
       {#if settingsMessage}
         <span class="settings-message">{settingsMessage}</span>
@@ -108,14 +129,14 @@
   <section class="modal-section">
     <h4>Active Mods</h4>
     <p class="placeholder-copy">
-      <code>mod: true</code> を持つ Lore ファイルを常時Promptへロードします。RAG検索対象外になります。
+      {@html $t("settings.modsDesc")}
     </p>
     {#if pinsLoading}
-      <p class="placeholder-copy">読み込んでいます…</p>
+      <p class="placeholder-copy">{$t("settings.pinsLoading")}</p>
     {:else if !pinsData}
-      <p class="placeholder-copy">Mods 情報を取得できませんでした。</p>
+      <p class="placeholder-copy">{$t("settings.modsLoadError")}</p>
     {:else if pinsData.available_mods?.length === 0}
-      <p class="placeholder-copy">mod: true を持つ Lore ファイルがありません。</p>
+      <p class="placeholder-copy">{$t("settings.noMods")}</p>
     {:else}
       <ul class="pin-list">
         {#each pinsData.available_mods as mod}
@@ -150,14 +171,14 @@
   <section class="modal-section">
     <h4>Pinned Characters</h4>
     <p class="placeholder-copy">
-      常時 Prompt へフルロードするキャラクターを選択します。RAG検索対象外になります。
+      {$t("settings.pinnedCharsDesc")}
     </p>
     {#if pinsLoading}
-      <p class="placeholder-copy">読み込んでいます…</p>
+      <p class="placeholder-copy">{$t("settings.pinsLoading")}</p>
     {:else if !pinsData}
-      <p class="placeholder-copy">Characters 情報を取得できませんでした。</p>
+      <p class="placeholder-copy">{$t("settings.charsLoadError")}</p>
     {:else if pinsData.available_characters?.length === 0}
-      <p class="placeholder-copy">キャラクターファイルがありません。</p>
+      <p class="placeholder-copy">{$t("settings.noChars")}</p>
     {:else}
       <ul class="pin-list">
         {#each pinsData.available_characters ?? [] as char}
@@ -189,16 +210,19 @@
   <section class="modal-section">
     <h4>Token Usage</h4>
     <p class="placeholder-copy">
-      最後に実際送信されたPromptに紐づく概算です。Scenario Editor の事前Previewとは別の保存済みデータを参照します。
+      {$t("settings.tokenUsageDesc")}
     </p>
     {#if promptPreviewLoading}
-      <p class="placeholder-copy">Token Usage を読み込んでいます。</p>
+      <p class="placeholder-copy">{$t("settings.tokenUsageLoading")}</p>
     {:else if promptPreviewError}
       <p class="placeholder-copy error-copy">{promptPreviewError}</p>
     {:else if tokenUsage()}
+      {#if tokenUsageWarning()}
+        <p class="placeholder-copy error-copy">{tokenUsageWarning()}</p>
+      {/if}
       <dl class="info-list compact-list">
-        <div><dt>Mode</dt><dd>{tokenUsage().estimate ? "概算" : "実測"}</dd></div>
-        <div><dt>Tokenizer</dt><dd>{tokenUsage().tokenizer || "未記録"}</dd></div>
+        <div><dt>Mode</dt><dd>{tokenUsage().estimate ? $t("settings.estimate") : $t("settings.actual")}</dd></div>
+        <div><dt>Tokenizer</dt><dd>{tokenUsage().tokenizer || $t("common.unrecorded")}</dd></div>
         <div><dt>Prompt</dt><dd>{formatNumber(tokenUsage().prompt_tokens)}</dd></div>
         <div><dt>Reserved</dt><dd>{formatNumber(tokenUsage().reserved_response_tokens)}</dd></div>
         <div><dt>Total</dt><dd>{formatNumber(tokenUsage().total_with_reserved_response)}</dd></div>
@@ -209,34 +233,34 @@
     {:else}
       <p class="placeholder-copy">
         {promptPreview?.has_prompt
-          ? "このPromptにはToken Usageがまだ保存されていません。次の会話後に表示されます。"
-          : promptPreview?.message || "まだ送信済みプロンプトはありません。次の会話後にToken Usageを表示します。"}
+          ? $t("settings.noTokenUsage")
+          : promptPreview?.message || $t("settings.noPromptYet")}
       </p>
     {/if}
   </section>
 
   <section class="modal-section">
-    <h4>最新送信Prompt</h4>
+    <h4>{$t("settings.latestPromptHeading")}</h4>
     <p class="placeholder-copy">
-      このセッションで最後にGMモデルへ実際送信したPromptです。保存対象は最新1件のみです。
+      {$t("settings.latestPromptDesc")}
     </p>
     {#if promptPreviewLoading}
-      <p class="placeholder-copy">最新送信Prompt を読み込んでいます。</p>
+      <p class="placeholder-copy">{$t("settings.latestPromptLoading")}</p>
     {:else if promptPreviewError}
       <p class="placeholder-copy error-copy">{promptPreviewError}</p>
     {:else if promptPreview?.has_prompt}
       <dl class="info-list compact-list">
-        <div><dt>Turn</dt><dd>{promptPreview.prompt?.turn ?? "未記録"}</dd></div>
-        <div><dt>Profile</dt><dd>{promptPreview.prompt?.profile?.id || "未記録"}</dd></div>
-        <div><dt>Model</dt><dd>{promptPreview.prompt?.profile?.model || "未記録"}</dd></div>
+        <div><dt>Turn</dt><dd>{promptPreview.prompt?.turn ?? $t("common.unrecorded")}</dd></div>
+        <div><dt>Profile</dt><dd>{promptPreview.prompt?.profile?.id || $t("common.unrecorded")}</dd></div>
+        <div><dt>Model</dt><dd>{promptPreview.prompt?.profile?.model || $t("common.unrecorded")}</dd></div>
         <div><dt>Messages</dt><dd>{promptPreview.prompt?.message_count ?? 0}</dd></div>
         <div><dt>Characters</dt><dd>{promptPreview.prompt?.character_count ?? 0}</dd></div>
-        <div><dt>Saved</dt><dd>{promptPreview.prompt?.saved_at || "未記録"}</dd></div>
+        <div><dt>Saved</dt><dd>{promptPreview.prompt?.saved_at || $t("common.unrecorded")}</dd></div>
       </dl>
       <pre class="prompt-preview-block">{promptJson()}</pre>
     {:else}
       <p class="placeholder-copy">
-        {promptPreview?.message || "まだ送信済みプロンプトはありません。次の会話後にここへ表示されます。"}
+        {promptPreview?.message || $t("settings.noPromptYet2")}
       </p>
     {/if}
   </section>
@@ -244,20 +268,20 @@
   <section class="modal-section">
     <h4>RAG Context</h4>
     <p class="placeholder-copy">
-      最新送信Promptへ実際に入った検索結果です。source path から該当Markdownへ移動できます。
+      {$t("settings.ragContextDesc")}
     </p>
     {#if promptPreviewLoading}
-      <p class="placeholder-copy">RAG Context を読み込んでいます。</p>
+      <p class="placeholder-copy">{$t("settings.ragContextLoading")}</p>
     {:else if promptPreviewError}
       <p class="placeholder-copy error-copy">{promptPreviewError}</p>
     {:else if promptPreview?.prompt?.rag_results?.length}
       {#if ragDebug().length}
         <dl class="info-list compact-list">
           {#each ragDebug() as debug}
-            <div><dt>Query</dt><dd>{debug.query || "未記録"}</dd></div>
-            <div><dt>Sources</dt><dd>{debug.sources?.join(", ") || "未記録"}</dd></div>
+            <div><dt>Query</dt><dd>{debug.query || $t("common.unrecorded")}</dd></div>
+            <div><dt>Sources</dt><dd>{debug.sources?.join(", ") || $t("common.unrecorded")}</dd></div>
             <div><dt>Retrieved</dt><dd>{debug.retrieved_count ?? 0} / included {debug.included_count ?? 0}</dd></div>
-            <div><dt>Skipped</dt><dd>{debug.skipped_reason || "なし"}</dd></div>
+            <div><dt>Skipped</dt><dd>{debug.skipped_reason || $t("common.none")}</dd></div>
           {/each}
         </dl>
       {/if}
@@ -266,7 +290,7 @@
           <article class="rag-result-card">
             <div class="rag-result-head">
               <strong>{result.title || result.source_path}</strong>
-              <span>{result.type || "rag"} / score {result.score ?? "未記録"}</span>
+              <span>{result.type || "rag"} / score {result.score ?? $t("common.unrecorded")}</span>
             </div>
             <button
               class="source-link-button"
@@ -276,7 +300,7 @@
             >
               {result.source_path}
             </button>
-            <p>{result.content || "本文抜粋なし"}</p>
+            <p>{result.content || $t("settings.noContent")}</p>
           </article>
         {/each}
       </div>
@@ -284,17 +308,17 @@
       {#if ragDebug().length}
         <dl class="info-list compact-list">
           {#each ragDebug() as debug}
-            <div><dt>Query</dt><dd>{debug.query || "未記録"}</dd></div>
-            <div><dt>Sources</dt><dd>{debug.sources?.join(", ") || "未記録"}</dd></div>
+            <div><dt>Query</dt><dd>{debug.query || $t("common.unrecorded")}</dd></div>
+            <div><dt>Sources</dt><dd>{debug.sources?.join(", ") || $t("common.unrecorded")}</dd></div>
             <div><dt>Retrieved</dt><dd>{debug.retrieved_count ?? 0} / included {debug.included_count ?? 0}</dd></div>
-            <div><dt>Skipped</dt><dd>{debug.skipped_reason || "なし"}</dd></div>
+            <div><dt>Skipped</dt><dd>{debug.skipped_reason || $t("common.none")}</dd></div>
           {/each}
         </dl>
       {/if}
       <p class="placeholder-copy">
         {promptPreview?.has_prompt
-          ? "このPromptにはRAG検索結果が入りませんでした。"
-          : "まだ送信済みPromptがないため、RAG検索結果もありません。"}
+          ? $t("settings.ragNoResults")
+          : $t("settings.ragNoPrompt")}
       </p>
     {/if}
   </section>
@@ -302,10 +326,10 @@
   <section class="modal-section">
     <h4>Memory / RAG Status</h4>
     <p class="placeholder-copy">
-      自動生成memoryと、派生データであるRAG indexの状態です。Vault上のMarkdownが正本です。
+      {$t("settings.memoryRagDesc")}
     </p>
     {#if ragStatusLoading}
-      <p class="placeholder-copy">RAG status を読み込んでいます。</p>
+      <p class="placeholder-copy">{$t("settings.ragStatusLoading")}</p>
     {:else if ragStatusError}
       <p class="placeholder-copy error-copy">{ragStatusError}</p>
     {:else if ragStatus}
@@ -314,18 +338,18 @@
         <div><dt>Session summaries</dt><dd>{memoryCounts().session_summaries ?? 0}</dd></div>
         <div><dt>Facts</dt><dd>{memoryCounts().extracted_facts ?? 0}</dd></div>
         <div><dt>Threads</dt><dd>{memoryCounts().unresolved_threads ?? 0}</dd></div>
-        <div><dt>Index</dt><dd>{ragStatus.rag_index?.indexed ? "indexed" : "未構築"}</dd></div>
+        <div><dt>Index</dt><dd>{ragStatus.rag_index?.indexed ? "indexed" : $t("settings.notBuilt")}</dd></div>
         <div><dt>Documents</dt><dd>{ragStatus.rag_index?.document_count ?? 0}</dd></div>
-        <div><dt>Indexed</dt><dd>{ragStatus.rag_index?.indexed_at || "未記録"}</dd></div>
-        <div><dt>Rebuild</dt><dd>{ragStatus.rag_index?.rebuild_needed ? "needed" : "不要"}</dd></div>
-        <div><dt>Stale</dt><dd>{ragStatus.rag_index?.stale ? "rebuild needed" : "なし"}</dd></div>
-        <div><dt>Reason</dt><dd>{ragStatus.rag_index?.reason || "未記録"}</dd></div>
-        <div><dt>Marked</dt><dd>{ragStatus.rag_index?.marked_at || "未記録"}</dd></div>
+        <div><dt>Indexed</dt><dd>{ragStatus.rag_index?.indexed_at || $t("common.unrecorded")}</dd></div>
+        <div><dt>Rebuild</dt><dd>{ragStatus.rag_index?.rebuild_needed ? $t("settings.rebuildNeeded") : $t("settings.notNeeded")}</dd></div>
+        <div><dt>Stale</dt><dd>{ragStatus.rag_index?.stale ? "rebuild needed" : $t("common.none")}</dd></div>
+        <div><dt>Reason</dt><dd>{ragStatus.rag_index?.reason || $t("common.unrecorded")}</dd></div>
+        <div><dt>Marked</dt><dd>{ragStatus.rag_index?.marked_at || $t("common.unrecorded")}</dd></div>
       </dl>
       <div class="modal-actions">
         <button type="button" disabled={ragRebuildRunning} onclick={() => void rebuildRagIndex()}>
           <RefreshCcw size={15} aria-hidden="true" />
-          {ragRebuildRunning ? "再構築中" : "Index再構築"}
+          {ragRebuildRunning ? $t("settings.rebuilding") : $t("settings.rebuildIndex")}
         </button>
         {#if ragRebuildMessage}
           <span class="settings-message">{ragRebuildMessage}</span>
@@ -349,11 +373,11 @@
           <h5>Memory Markdown</h5>
           <button type="button" disabled={memoryLoading} onclick={() => scenarioId && void loadMemoryList(scenarioId)}>
             <RefreshCcw size={14} aria-hidden="true" />
-            {memoryLoading ? "読込中" : "再読込"}
+            {memoryLoading ? $t("settings.memoryReloading") : $t("settings.memoryReload")}
           </button>
         </div>
         {#if memoryLoading}
-          <p class="placeholder-copy">Memory一覧を読み込んでいます。</p>
+          <p class="placeholder-copy">{$t("settings.memoryListLoading")}</p>
         {:else if memoryError}
           <p class="placeholder-copy error-copy">{memoryError}</p>
         {:else if memoryList?.total}
@@ -372,7 +396,7 @@
                         <strong>{item.title || item.path}</strong>
                         <span>{item.path}</span>
                         <small>
-                          {item.rag_enabled ? "RAG対象" : "RAG除外"} / {item.in_index ? "index済み" : "未index"}
+                          {item.rag_enabled ? $t("settings.ragEnabled") : $t("settings.ragDisabled")} / {item.in_index ? $t("settings.indexed") : $t("settings.notIndexed")}
                           {item.stale_created ? " / stale" : ""}
                         </small>
                       </button>
@@ -391,22 +415,22 @@
                   {selectedMemoryItem.path}
                 </button>
                 <dl class="info-list compact-list">
-                  <div><dt>RAG</dt><dd>{selectedMemoryItem.rag_enabled ? "対象" : "除外"}</dd></div>
-                  <div><dt>Index</dt><dd>{selectedMemoryItem.in_index ? "indexed" : "未index"}</dd></div>
-                  <div><dt>Stale</dt><dd>{selectedMemoryItem.stale_created ? "created after index" : "なし"}</dd></div>
+                  <div><dt>RAG</dt><dd>{selectedMemoryItem.rag_enabled ? $t("settings.ragEnabledShort") : $t("settings.ragDisabledShort")}</dd></div>
+                  <div><dt>Index</dt><dd>{selectedMemoryItem.in_index ? "indexed" : $t("settings.notIndexed")}</dd></div>
+                  <div><dt>Stale</dt><dd>{selectedMemoryItem.stale_created ? "created after index" : $t("common.none")}</dd></div>
                 </dl>
                 <div class="memory-preview-body markdown-body">
-                  {@html renderMarkdown(selectedMemoryItem.content || "本文なし")}
+                  {@html renderMarkdown(selectedMemoryItem.content || $t("settings.noBody"))}
                 </div>
               </article>
             {/if}
           </div>
         {:else}
-          <p class="placeholder-copy">生成済み memory Markdown はまだありません。</p>
+          <p class="placeholder-copy">{$t("settings.noMemory")}</p>
         {/if}
       </div>
     {:else}
-      <p class="placeholder-copy">RAG status はまだ読み込まれていません。</p>
+      <p class="placeholder-copy">{$t("settings.ragStatusNotLoaded")}</p>
     {/if}
   </section>
 </div>

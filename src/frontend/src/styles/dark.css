@@ -1,0 +1,190 @@
+/* Dark mode overrides for semantic / one-off colors not covered by CSS tokens */
+@media (prefers-color-scheme: dark) {
+
+  /* ── RAG section (scenario-editor) ── */
+  .rag-section {
+    background: var(--c-surface);
+  }
+  .rag-dl dt {
+    color: var(--c-text-muted);
+  }
+  .rag-dl dd {
+    color: var(--c-text);
+  }
+  .rag-dl dd.rag-warn {
+    color: #d49848;
+  }
+  .rag-dl dd.rag-disabled {
+    color: var(--c-text-muted);
+  }
+
+  /* ── Input backgrounds that use #fff ── */
+  .new-persona-form input {
+    background: var(--c-surface-2);
+    color: var(--c-text);
+  }
+
+  /* ── Warning notice ── */
+  .state-initial-notice {
+    border-color: #7a6a45;
+    background: #2a2214;
+    color: #c8a86e;
+  }
+
+  /* ── Error / mini-error ── */
+  .error-notice {
+    border-color: #5a3030;
+    background: #2a1818;
+    color: #d09090;
+  }
+  .mini-error {
+    color: #d09090;
+  }
+
+  /* ── Status dots ── */
+  .status-ok .status-dot  { background: #3a9e62; }
+  .status-ng .status-dot  { background: #c45050; }
+  .status-loading .status-dot { background: var(--c-scrollbar); }
+
+  /* ── Buttons: primary / use ── */
+  .primary-button {
+    background: var(--c-accent);
+    color: #ffffff;
+    border-color: var(--c-accent);
+  }
+  .primary-button:hover:not(:disabled) {
+    background: var(--c-accent-light);
+    border-color: var(--c-accent-light);
+  }
+  .use-button {
+    background: #2e6040;
+    color: #ffffff;
+    border-color: #2e6040;
+  }
+  .use-button:hover:not(:disabled) {
+    background: #3a7450;
+    border-color: #3a7450;
+  }
+
+  /* ── Default star / pin default ── */
+  .default-star-button { color: #706050; }
+  .default-star-button:hover,
+  .default-star-button.active { color: #d4922b; background: none; border-color: transparent; }
+  .pin-warning { color: #c89048; }
+
+  /* ── Orphan / branch session tree nodes ── */
+  .session-tree-list li.orphan-node { border-color: #8a5030; }
+
+  /* ── New-item button (persona picker) ── */
+  .new-item-button { border-color: #485040; color: var(--c-text-muted); }
+  .new-item-button:hover { background: var(--c-surface); }
+
+  /* ── Pin title (muted teal in light mode, already light enough in dark) ── */
+  .pin-title { color: var(--c-text-muted); }
+
+  /* ── Source link (disabled) ── */
+  .source-link-button:disabled { color: var(--c-text-muted); }
+
+  /* ── Picker: in-use marker ── */
+  .picker-list button.in-use { border-color: var(--c-accent); }
+
+  /* ── RAG result source link ── */
+  .source-link-button { color: var(--c-accent); }
+
+  /* ── Prompt preview JSON (intentionally dark bg in light mode — keep dark, adjust tones) ── */
+  .prompt-preview-json {
+    background: #111615;
+    color: #d4cfca;
+    border-color: var(--c-border);
+  }
+
+  /* ── Visual canvas (Svelte Flow) ── */
+  .visual-canvas .svelte-flow {
+    --xy-background-color: var(--c-surface-2);
+    --xy-node-border-default: 1px solid #3d4a47;
+    --xy-node-background-color-default: var(--c-surface-2);
+    --xy-node-color-default: var(--c-text);
+    --xy-edge-stroke-default: #4d6460;
+    --xy-minimap-background-color: var(--c-surface);
+  }
+  .visual-canvas .prompt-flow-file {
+    border-color: #3a6860;
+    background: #1a3530;
+  }
+  .visual-canvas .prompt-flow-selected_persona,
+  .visual-canvas .prompt-flow-user_note {
+    border-color: #6a5030;
+    background: #2a2010;
+  }
+  .visual-canvas .prompt-flow-state {
+    border-color: #405070;
+    background: #1a2035;
+  }
+  .visual-canvas .prompt-flow-rag {
+    border-color: #604878;
+    background: #261a35;
+  }
+  .visual-canvas .prompt-flow-session_log,
+  .visual-canvas .prompt-flow-current_user_message {
+    border-color: #584845;
+    background: #271b18;
+  }
+  .visual-canvas .prompt-flow-output {
+    border-color: var(--c-accent);
+    background: var(--c-selected);
+  }
+  .visual-canvas .prompt-flow-condition {
+    border-color: #7a5a18;
+    background: #261e0a;
+  }
+  .visual-canvas .prompt-flow-final {
+    border-color: var(--c-accent);
+    background: #163028;
+  }
+  .visual-canvas .prompt-flow-node.required {
+    box-shadow: inset 0 0 0 2px var(--c-accent-ring);
+  }
+
+  /* ── Timeline bookmarks ── */
+  .timeline-node.bookmarked .timeline-dot {
+    border-color: #9a6820;
+    background: #2a1e08;
+  }
+  .timeline-action.active {
+    border-color: #9a6820;
+    background: #2a1e08;
+    color: #d4922b;
+  }
+
+  /* ── Collapsed timeline group ── */
+  .timeline-group-row.collapsed .timeline-group-button {
+    border-color: #483c2a;
+    background: #2a2418;
+  }
+
+  /* ── New message badge hover ── */
+  .new-message-badge:hover {
+    background: var(--c-surface-2);
+    border-color: var(--c-border);
+  }
+
+  /* ── Meta content: live (active scene note) ── */
+  .meta-content--live {
+    border-color: #2e5040;
+    background: #1a3028;
+  }
+
+  /* ── Highlight animation override for dark mode ── */
+  @keyframes highlight-fade {
+    0% {
+      background-color: #1e3835;
+      border-color: var(--c-accent);
+      box-shadow: 0 0 0 1px var(--c-accent);
+    }
+    100% {
+      background-color: inherit;
+      border-color: var(--c-border);
+      box-shadow: 0 0 0 0 transparent;
+    }
+  }
+}

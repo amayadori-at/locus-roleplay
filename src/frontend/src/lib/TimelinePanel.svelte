@@ -9,6 +9,7 @@
     normalizeGroupSize,
     normalizedBranches
   } from "./timelineRows.js";
+  import { t } from "./i18n.js";
 
   /** @type {Array<Record<string, any>>} */
   export let items = [];
@@ -23,12 +24,17 @@
   export let onOpenSession = (sessionId) => {};
   /** @type {(turn: number, bookmarked: boolean) => void} */
   export let onToggleBookmark = (turn, bookmarked) => {};
+  /** @type {(sessionId: string) => void} */
+  export let onCopySessionId = (sessionId) => {};
+  /** @type {(branch: Record<string, any>) => void} */
+  export let onRenameBranch = (branch) => {};
 
   let jumpTurn = "";
   let searchText = "";
   let bookmarkOnly = false;
   let groupByTurns = true;
   let groupSize = DEFAULT_GROUP_SIZE;
+  let toolsOpen = false;
   /** @type {Record<string, boolean>} */
   let collapsedGroups = {};
   /** @type {HTMLDivElement | null} */
@@ -46,8 +52,8 @@
 
   function parentSessionLabel() {
     return metadata.parent_session_id
-      ? `${metadata.parent_session_id} / Turn ${metadata.branched_from_turn ?? "-"} から分岐`
-      : "親セッションなし";
+      ? $t("timeline.parentLabel", { sessionId: metadata.parent_session_id, turn: metadata.branched_from_turn ?? "-" })
+      : $t("timeline.parentNone");
   }
 
   function currentSessionLabel() {
@@ -87,44 +93,56 @@
 </script>
 
 <div class="timeline-origin">
-  <span>現在のセッション</span>
+  <span>{$t("timeline.currentSession")}</span>
   <strong>{currentSessionLabel()}</strong>
   <small>{currentSessionId}</small>
-  <span>親</span>
+  <span>{$t("timeline.parent")}</span>
   <small>{parentSessionLabel()}</small>
   {#if metadata.parent_session_id}
     <button class="tool-button timeline-action" type="button" onclick={() => onOpenSession(metadata.parent_session_id)}>
-      親へ移動
+      {$t("timeline.goParent")}
     </button>
   {/if}
 </div>
 
-<div class="timeline-tools">
+<div class="timeline-tools-bar">
+  <button
+    class="tool-button timeline-tools-toggle"
+    type="button"
+    aria-expanded={toolsOpen}
+    onclick={() => toolsOpen = !toolsOpen}
+  >
+    <span>{$t("timeline.toolsToggle")}</span>
+    <span aria-hidden="true">{toolsOpen ? "▲" : "▼"}</span>
+  </button>
+</div>
+
+<div class="timeline-tools" class:timeline-tools-hidden={!toolsOpen}>
   <label>
-    <span>Turn</span>
-    <input class="compact-input" type="number" min="0" bind:value={jumpTurn} placeholder="番号" />
+    <span>{$t("timeline.turn")}</span>
+    <input class="compact-input" type="number" min="0" bind:value={jumpTurn} placeholder={$t("timeline.turnPlaceholder")} />
   </label>
-  <button class="tool-button timeline-action" type="button" onclick={handleJumpSubmit}>ジャンプ</button>
+  <button class="tool-button timeline-action" type="button" onclick={handleJumpSubmit}>{$t("timeline.jump")}</button>
   <label class="timeline-search">
-    <span>検索</span>
-    <input class="compact-input" type="search" bind:value={searchText} placeholder="キーワード" />
+    <span>{$t("timeline.search")}</span>
+    <input class="compact-input" type="search" bind:value={searchText} placeholder={$t("timeline.searchPlaceholder")} />
   </label>
   <label class="timeline-bookmark-filter">
     <input type="checkbox" bind:checked={bookmarkOnly} />
-    <span>Bookmarkのみ</span>
+    <span>{$t("timeline.bookmarkOnly")}</span>
   </label>
   <label class="timeline-group-toggle">
     <input type="checkbox" bind:checked={groupByTurns} />
-    <span>Group</span>
+    <span>{$t("timeline.group")}</span>
   </label>
   <label class="timeline-group-size">
-    <span>幅</span>
+    <span>{$t("timeline.groupSize")}</span>
     <input class="compact-input" type="number" min="1" max="100" bind:value={groupSize} disabled={!groupByTurns} />
   </label>
 </div>
 
 <div class="timeline-virtual-viewport" bind:this={viewportElement} onscroll={handleTimelineScroll}>
-  <ol class="timeline-list" aria-label={useVirtualRows ? "Timeline virtualized" : "Timeline"}>
+  <ol class="timeline-list" aria-label={useVirtualRows ? $t("timeline.virtualLabel") : $t("timeline.label")}>
     {#if topSpacerHeight}
       <li class="timeline-spacer" style={`height: ${topSpacerHeight}px`}></li>
     {/if}
@@ -132,16 +150,16 @@
       {#if row.type === "group"}
         <li class:collapsed={row.collapsed} class="timeline-group-row">
           <button class="timeline-group-button" type="button" onclick={() => toggleGroup(row.key)}>
-            <span>{row.collapsed ? "▶" : "▼"} Turn {row.start}-{row.end}</span>
-            <small>{row.count} items</small>
+            <span>{row.collapsed ? "▶" : "▼"} {$t("timeline.groupRange", { start: row.start, end: row.end })}</span>
+            <small>{$t("timeline.items", { count: row.count })}</small>
           </button>
         </li>
       {:else}
         <li class:bookmarked={row.item.bookmarked} class="timeline-node">
           <div class="timeline-dot" aria-hidden="true"></div>
           <div class="timeline-content">
-            <span>Turn {rowTurn(row)}</span>
-            <strong>{row.item.role === "assistant" ? "GM 応答" : "ユーザー発言"}</strong>
+            <span>{$t("timeline.turn")} {rowTurn(row)}</span>
+            <strong>{row.item.role === "assistant" ? $t("timeline.gm") : $t("timeline.user")}</strong>
             <small>{getExcerpt(row.item)}</small>
 
             <div class="timeline-actions">
@@ -149,27 +167,44 @@
                 class:active={row.item.bookmarked}
                 class="tool-button timeline-action"
                 type="button"
-                title={row.item.bookmarked ? "Bookmark解除" : "Bookmark"}
+                title={row.item.bookmarked ? $t("timeline.unbookmark") : $t("timeline.bookmark")}
                 onclick={() => onToggleBookmark(rowTurn(row), !row.item.bookmarked)}
               >
                 {row.item.bookmarked ? "★" : "☆"}
               </button>
-              <button class="tool-button timeline-action" type="button" onclick={() => onJump(rowTurn(row), row.item.role)}>ここへジャンプ</button>
-              <button class="tool-button timeline-action" type="button" onclick={() => onBranch(rowTurn(row))}>ここから分岐</button>
+              <button class="tool-button timeline-action" type="button" onclick={() => onJump(rowTurn(row), row.item.role)}>{$t("timeline.jumpHere")}</button>
+              <button class="tool-button timeline-action" type="button" onclick={() => onBranch(rowTurn(row))}>{$t("timeline.branchHere")}</button>
             </div>
             {#if normalizedBranches(row.item.branches).length}
-              <div class="branch-list" aria-label="派生セッション">
+              <div class="branch-list" aria-label={$t("timeline.branches")}>
                 {#each normalizedBranches(row.item.branches) as branch}
                   <div class="branch-item">
                     <strong>{branch.display_name || branch.session_id}</strong>
-                    <span>{branch.session_id} / {branch.turn_count || 0} turns</span>
-                    <span>Turn {rowTurn(row)} から分岐</span>
+                    <span>{branch.session_id} / {$t("timeline.turns", { count: branch.turn_count || 0 })}</span>
+                    <span>{$t("timeline.branchMeta", { turn: rowTurn(row), state: branch.state_snapshot_available === false ? "fallback" : "snapshot" })}</span>
+                    {#if branch.state_snapshot_available === false}
+                      <small class="error-copy">{branch.state_snapshot_note || $t("timeline.snapshotFallback")}</small>
+                    {/if}
                     <button
                       class="tool-button timeline-action"
                       type="button"
                       onclick={() => branch.session_id && onOpenSession(branch.session_id)}
                     >
-                      移動
+                      {$t("timeline.open")}
+                    </button>
+                    <button
+                      class="tool-button timeline-action"
+                      type="button"
+                      onclick={() => onRenameBranch(branch)}
+                    >
+                      {$t("timeline.rename")}
+                    </button>
+                    <button
+                      class="tool-button timeline-action"
+                      type="button"
+                      onclick={() => branch.session_id && onCopySessionId(branch.session_id)}
+                    >
+                      {$t("timeline.copyId")}
                     </button>
                   </div>
                 {/each}
@@ -183,7 +218,7 @@
       <li class="timeline-spacer" style={`height: ${bottomSpacerHeight}px`}></li>
     {/if}
     {#if !filteredItems.length}
-      <li class="timeline-empty">該当するTimeline項目はありません。</li>
+      <li class="timeline-empty">{$t("timeline.empty")}</li>
     {/if}
   </ol>
 </div>
