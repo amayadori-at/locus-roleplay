@@ -11,5 +11,5 @@ node_modules/
 release/dist/
 vitest.config.js
 *.test.js
-!src/frontend/dist/
-!src/frontend/dist/**
+wiki/
+wiki-draft/
