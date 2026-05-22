@@ -12,6 +12,7 @@
     Pencil,
     PanelLeftClose,
     PanelLeftOpen,
+    PanelRightOpen,
     RefreshCcw,
     Send,
     Settings,
@@ -34,7 +35,6 @@
     listScenarioMemory,
     listScenarioCharacterBustups,
     listScenarioStartings,
-    listScenarioStarts,
     rebuildScenarioRagIndex,
     sendTurn,
     sendTurnStream,
@@ -182,11 +182,8 @@
   /** @type {Array<Record<string, any>>} */
   let startings = [];
   /** @type {Array<Record<string, any>>} */
-  let starts = [];
-  /** @type {Array<Record<string, any>>} */
   let characterBustups = [];
   let selectedStartingId = "";
-  let selectedStartId = "";
   let switchingStarting = false;
   let newMessageBadge = false;
   let loadedKey = "";
@@ -403,10 +400,8 @@
     activeMemoryPath = "";
     ragRebuildMessage = "";
     startings = [];
-    starts = [];
     characterBustups = [];
     selectedStartingId = "";
-    selectedStartId = "";
     switchingStarting = false;
     currentSessionId = route.sessionId || "";
 
@@ -440,19 +435,16 @@
   }
 
   async function loadChoices() {
-    const [personaPayload, profilePayload, startingPayload, bustupPayload, startsPayload] = await Promise.all([
+    const [personaPayload, profilePayload, startingPayload, bustupPayload] = await Promise.all([
       listPersonas(),
       listProfiles(),
       route.scenarioId ? listScenarioStartings(route.scenarioId) : Promise.resolve({ startings: [] }),
-      route.scenarioId ? listScenarioCharacterBustups(route.scenarioId) : Promise.resolve({ characters: [] }),
-      route.scenarioId ? listScenarioStarts(route.scenarioId) : Promise.resolve({ starts: [] })
+      route.scenarioId ? listScenarioCharacterBustups(route.scenarioId) : Promise.resolve({ characters: [] })
     ]);
     selection.setChoices(personaPayload.personas || [], profilePayload.profiles || []);
     startings = startingPayload.startings || [];
     characterBustups = bustupPayload.characters || [];
-    starts = startsPayload.starts || [];
     selectedStartingId = startings[0]?.id || "";
-    selectedStartId = starts[0]?.id || "";
   }
 
   async function createSelectedSession() {
@@ -477,8 +469,7 @@
         persona_id: $selection.selectedPersona,
         rp_profile_id: $selection.selectedRpProfile,
         summary_profile_id: $selection.selectedStateProfile === EMPTY_SELECTION ? null : $selection.selectedStateProfile,
-        starting_id: selectedStartingId || null,
-        start_id: selectedStartId || null
+        starting_id: selectedStartingId || null
       });
       const sessionId = payload.session?.session_id;
       if (!sessionId) {
@@ -566,7 +557,7 @@
 
   async function submitTurn() {
     const userMessage = input.trim();
-    if (!route.scenarioId || !currentSessionId || !userMessage || sending) {
+    if (!route.scenarioId || !currentSessionId || !userMessage || sending || stateUpdating) {
       return;
     }
 
@@ -592,7 +583,7 @@
             const turn = data.turn;
             messages = finalizeTurnMessages(messages, userMessage, turn, true);
             stateUpdating = true;
-            void Promise.all([loadState(scenarioId, sessionId), loadTimeline(scenarioId, sessionId)]);
+            void loadTimeline(scenarioId, sessionId);
             if (sessionModal === "settings") {
               void Promise.all([loadPromptPreview(scenarioId, sessionId), loadRagStatus(scenarioId)]);
             }
@@ -601,8 +592,8 @@
               sending = false;
             }
           },
-          onPostTurn: (data) => {
-            void handlePostTurnResult(scenarioId, sessionId, data);
+          onPostTurn: async (data) => {
+            await handlePostTurnResult(scenarioId, sessionId, data);
           }
         });
       } else {
@@ -1246,7 +1237,8 @@
   /** @param {"prev" | "next"} direction */
   async function switchStarting(direction) {
     if (!route.scenarioId || !currentSessionId || switchingStarting || startings.length <= 1) return;
-    const currentId = messages.find((/** @type {any} */ m) => m.is_starting)?.starting_id || startings[0]?.id;
+    const currentStarting = messages.find((/** @type {any} */ m) => m.is_starting);
+    const currentId = currentStarting?.starting_id || startings[0]?.id;
     const currentIndex = startings.findIndex((/** @type {any} */ s) => s.id === currentId);
     const next = (currentIndex + (direction === "next" ? 1 : -1) + startings.length) % startings.length;
     switchingStarting = true;
@@ -1335,17 +1327,6 @@
           {:else}
             <p class="notice">{$t("session.noStarting")}</p>
           {/if}
-          {#if starts.length}
-            <label class="setting-card">
-              <span>{$t("session.startId")}</span>
-              <select class="compact-input" bind:value={selectedStartId}>
-                <option value="">{$t("session.startIdNone")}</option>
-                {#each starts as start}
-                  <option value={start.id}>{start.name || start.id}</option>
-                {/each}
-              </select>
-            </label>
-          {/if}
         </section>
       {/if}
 
@@ -1409,17 +1390,6 @@
                 <small>{$t("session.noStarting")}</small>
               {/if}
             </label>
-            {#if starts.length}
-              <label class="setting-card">
-                <span>{$t("session.startId")}</span>
-                <select class="compact-input" bind:value={selectedStartId}>
-                  <option value="">{$t("session.startIdNone")}</option>
-                  {#each starts as start}
-                    <option value={start.id}>{start.name || start.id}</option>
-                  {/each}
-                </select>
-              </label>
-            {/if}
           </div>
 
           <div class="mobile-start-footer">
@@ -1461,7 +1431,7 @@
         </section>
       {/if}
     {:else}
-      <div class="session-workspace">
+      <div class="session-workspace" class:desktop-right-closed={!isMobile && !$layout.rightOpen}>
         <div class="mobile-right-tabs" aria-label={$t("session.stateAndTimeline")}>
           <button
             class:active={$layout.rightOpen && $layout.rightPanel === "state"}
@@ -1488,6 +1458,11 @@
             <h3 id="chat-heading">Chat</h3>
             <div class="chat-top-tools" aria-label={$t("session.sessionOps")}>
               <span>{route.scenarioId || $t("session.noScenarioId")}</span>
+              {#if !isMobile && !$layout.rightOpen}
+                <button class="icon-button" type="button" title={$t("session.openRightPanel")} aria-label={$t("session.openRightPanel")} onclick={() => layout.setRightOpen(true)}>
+                  <PanelRightOpen size={17} aria-hidden="true" />
+                </button>
+              {/if}
               <button class="icon-button" type="button" title={$t("session.sessionInfo")} aria-label={$t("session.sessionInfo")} onclick={openSessionInfo}>
                 <Info size={17} aria-hidden="true" />
               </button>
@@ -1689,7 +1664,7 @@
               <textarea
                 bind:this={composer}
                 bind:value={input}
-                disabled={!currentSessionId || sending}
+                disabled={!currentSessionId || sending || stateUpdating}
                 placeholder={currentSessionId ? $t("session.inputPlaceholder") : $t("session.creatingSessionPlaceholder")}
                 rows="1"
                 onkeydown={handleKeydown}
@@ -1705,7 +1680,7 @@
             </div>
             <div class="composer-footer-actions">
               <label class="send-mode-toggle" title={sending ? $t("session.streamToggleSending") : $t("session.streamToggleTitle")}>
-                <input type="checkbox" checked={$preferences.streamEnabled} disabled={sending} onchange={(event) => preferences.setStreamEnabled(event.currentTarget.checked)} />
+                <input type="checkbox" checked={$preferences.streamEnabled} disabled={sending || stateUpdating} onchange={(event) => preferences.setStreamEnabled(event.currentTarget.checked)} />
                 <span>Stream</span>
               </label>
               <label class="send-mode-toggle" title={$t("session.enterToggleTitle")}>
@@ -1715,7 +1690,7 @@
               <button
                 class="send-button"
                 type={sending ? "button" : "submit"}
-                disabled={!currentSessionId || (!sending && !input.trim())}
+                disabled={!currentSessionId || stateUpdating || (!sending && !input.trim())}
                 onclick={() => sending && stopGeneration()}
               >
                 {#if sending}

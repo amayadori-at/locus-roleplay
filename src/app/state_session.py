@@ -35,7 +35,7 @@ class SessionMetadata:
     turn_count: int = 0
     created_at: str | None = None
     updated_at: str | None = None
-    start_id: str | None = None
+    starting_id: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         now = _now_iso()
@@ -49,8 +49,8 @@ class SessionMetadata:
             "created_at": self.created_at or now,
             "updated_at": self.updated_at or now,
         }
-        if self.start_id is not None:
-            data["start_id"] = self.start_id
+        if self.starting_id is not None:
+            data["starting_id"] = self.starting_id
         return data
 
 

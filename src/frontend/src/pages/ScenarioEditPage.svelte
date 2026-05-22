@@ -5,7 +5,9 @@
   import { onMount } from "svelte";
   import {
     createScenarioSourceFile,
+    deleteMemory,
     deleteScenarioSourceFile,
+    listScenarioMemory,
     getScenarioPromptPreview,
     getScenarioPromptGraph,
     getScenarioRagStatus,
@@ -152,6 +154,12 @@
   let ragRebuildMessage = "";
   let vectorRebuildMessage = "";
 
+  /** @type {Record<string, Array<Record<string, any>>>} */
+  let memoryGroups = {};
+  let memoryLoading = false;
+  let memoryError = "";
+  let deletingMemoryId = "";
+  let memoryMessage = "";
   onMount(async () => {
     const mq = window.matchMedia("(max-width: 860px)");
     isMobile = mq.matches;
@@ -925,6 +933,42 @@
       rebuildingVectorIndex = false;
     }
   }
+
+  async function loadMemory() {
+    if (!route.scenarioId) return;
+    memoryLoading = true;
+    memoryError = "";
+    memoryMessage = "";
+    try {
+      const payload = await listScenarioMemory(route.scenarioId);
+      memoryGroups = payload.groups || {};
+    } catch (caught) {
+      memoryError = caught instanceof Error ? caught.message : translateNow("editor.loadFilesError");
+    } finally {
+      memoryLoading = false;
+    }
+  }
+
+  /**
+   * @param {string} kind
+   * @param {string} memoryId
+   */
+  async function doDeleteMemory(kind, memoryId) {
+    if (!route.scenarioId || deletingMemoryId) return;
+    if (!window.confirm(translateNow("editor.memoryDeleteConfirm", { id: memoryId }))) return;
+    deletingMemoryId = `${kind}/${memoryId}`;
+    memoryMessage = "";
+    try {
+      await deleteMemory(route.scenarioId, kind, memoryId);
+      memoryMessage = translateNow("editor.memoryDeleted", { id: memoryId });
+      await loadMemory();
+    } catch (caught) {
+      memoryError = caught instanceof Error ? caught.message : translateNow("editor.memoryDeleteError");
+    } finally {
+      deletingMemoryId = "";
+    }
+  }
+
 </script>
 
 <div class="toolbar">
@@ -932,9 +976,11 @@
     <p class="eyebrow">Scenario</p>
     <h2 id="workspace-heading">{route.scenarioId || "Scenario Page"}</h2>
   </div>
-  <button class="icon-button" type="button" title="Front Page" onclick={onNavigate.openHome}>
-    <ArrowLeft size={18} aria-hidden="true" />
-  </button>
+  <div class="toolbar-actions">
+    <button class="icon-button" type="button" title="Front Page" onclick={onNavigate.openHome}>
+      <ArrowLeft size={18} aria-hidden="true" />
+    </button>
+  </div>
 </div>
 
 {#if error}
@@ -991,6 +1037,9 @@
           </button>
           <button class:selected={activeTab === "rag"} type="button" onclick={() => { activeTab = "rag"; void loadRagStatus(); }}>
             RAG
+          </button>
+          <button class:selected={activeTab === "memory"} type="button" onclick={() => { activeTab = "memory"; void loadMemory(); }}>
+            {$t("editor.memoryList")}
           </button>
         </div>
       </div>
@@ -1537,6 +1586,56 @@
               <p class="rag-message">{vectorRebuildMessage}</p>
             {/if}
           </div>
+        </div>
+      {:else if activeTab === "memory"}
+        <div class="rag-status-panel">
+          {#if memoryMessage}
+            <p class="rag-message">{memoryMessage}</p>
+          {/if}
+          {#if memoryError}
+            <p class="notice error-notice">{memoryError}</p>
+          {/if}
+          {#if memoryLoading}
+            <p class="notice">{$t("editor.loadingFiles")}</p>
+          {:else}
+            {#each Object.entries(memoryGroups) as [kind, items]}
+              <div class="rag-section">
+                <div class="rag-section-header">
+                  <h4>{kind}</h4>
+                  <span class="rag-count">{items.length}</span>
+                </div>
+                {#if items.length}
+                  <ul class="memory-list">
+                    {#each items as item}
+                      {@const memId = item.path.split("/").pop()?.replace(/\.md$/, "") ?? ""}
+                      <li class="memory-item">
+                        <div class="memory-item-info">
+                          <span class="memory-item-title">{item.title || memId}</span>
+                          {#if item.excerpt}
+                            <span class="memory-item-excerpt">{item.excerpt}</span>
+                          {/if}
+                        </div>
+                        <button
+                          class="icon-button compact-icon"
+                          type="button"
+                          title={$t("common.delete")}
+                          disabled={!!deletingMemoryId}
+                          onclick={() => void doDeleteMemory(kind, memId)}
+                        >
+                          <Trash2 size={14} aria-hidden="true" />
+                        </button>
+                      </li>
+                    {/each}
+                  </ul>
+                {:else}
+                  <p class="notice">{$t("editor.noFiles")}</p>
+                {/if}
+              </div>
+            {/each}
+            {#if !Object.keys(memoryGroups).length}
+              <p class="notice">{$t("editor.noFiles")}</p>
+            {/if}
+          {/if}
         </div>
       {/if}
     </section>

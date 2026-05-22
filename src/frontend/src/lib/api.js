@@ -435,8 +435,7 @@ export function deleteSession(scenarioId, sessionId) {
  *   summary_profile_id?: string | null,
  *   session_id?: string,
  *   display_name?: string,
- *   starting_id?: string | null,
- *   start_id?: string | null
+ *   starting_id?: string | null
  * }} payload
  */
 export function createSession(payload) {
@@ -554,7 +553,7 @@ export function sendTurn(scenarioId, sessionId, userMessage, options = {}) {
  *   signal?: AbortSignal,
  *   onDelta?: (delta: string) => void,
  *   onFinal?: (data: any) => void,
- *   onPostTurn?: (data: any) => void
+ *   onPostTurn?: (data: any) => void | Promise<void>
  * }} [options]
  */
 export async function sendTurnStream(scenarioId, sessionId, userMessage, options = {}) {
@@ -587,14 +586,14 @@ export async function sendTurnStream(scenarioId, sessionId, userMessage, options
   let finalData = null;
   await consumeSseStream(response, {
     createError: (data) => new ApiError(String(data.message || data.error || "Stream failed"), 200, data),
-    onEvent(event) {
+    async onEvent(event) {
       if (event.event === "delta" && typeof event.data.delta === "string") {
         options.onDelta?.(event.data.delta);
       } else if (event.event === "final") {
         finalData = event.data;
         options.onFinal?.(event.data);
       } else if (event.event === "post_turn") {
-        options.onPostTurn?.(event.data);
+        await options.onPostTurn?.(event.data);
         return "stop";
       }
     }
@@ -783,4 +782,64 @@ export async function continueTurnStream(scenarioId, sessionId, turn, options = 
   });
   if (finalData) return finalData;
   throw new ApiError("Streaming response did not include final turn payload", response.status, {});
+}
+
+// ---------------------------------------------------------------------------
+// ZIP export / import
+// ---------------------------------------------------------------------------
+
+/**
+ * @param {string} scenarioId
+ * @returns {Promise<Blob>}
+ */
+export async function exportScenario(scenarioId) {
+  const resp = await fetch(`/api/scenarios/${encodeURIComponent(scenarioId)}/export`);
+  if (!resp.ok) {
+    let message = `Export failed: ${resp.status}`;
+    try {
+      const data = await resp.json();
+      if (data.message) message = data.message;
+    } catch (_) { /* ignore */ }
+    throw new ApiError(message, resp.status, {});
+  }
+  return resp.blob();
+}
+
+/**
+ * @param {Blob} zipBlob
+ * @param {string} scenarioId
+ * @returns {Promise<any>}
+ */
+export async function importScenario(zipBlob, scenarioId) {
+  const resp = await fetch(
+    `/api/scenarios/import?scenario_id=${encodeURIComponent(scenarioId)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: zipBlob,
+    }
+  );
+  const data = await resp.json();
+  if (!resp.ok) throw new ApiError(data.message || data.error || `Import failed: ${resp.status}`, resp.status, data);
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// Memory management
+// ---------------------------------------------------------------------------
+
+/**
+ * @param {string} scenarioId
+ * @param {string} kind
+ * @param {string} memoryId
+ * @returns {Promise<any>}
+ */
+export async function deleteMemory(scenarioId, kind, memoryId) {
+  const resp = await fetch(
+    `/api/scenarios/${encodeURIComponent(scenarioId)}/memory/${encodeURIComponent(kind)}/${encodeURIComponent(memoryId)}`,
+    { method: "DELETE" }
+  );
+  const data = await resp.json();
+  if (!resp.ok) throw new ApiError(data.message || data.error || "Delete failed", resp.status, data);
+  return data;
 }
