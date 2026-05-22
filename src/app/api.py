@@ -25,7 +25,7 @@ from app.api_validation import (
     validate_new_scenario_source_path as _validate_new_scenario_source_path,
     validate_scenario_source_path as _validate_scenario_source_path,
 )
-from app.images import ImageMarkerError, image_asset_path, image_asset_url, parse_image_markers
+from app.images import ALLOWED_IMAGE_EXTENSIONS, ImageMarkerError, image_asset_path, image_asset_url, parse_image_markers
 from app.ids import is_locus_id
 from app.loaders import (
     SECRET_PROFILE_FIELDS,
@@ -102,6 +102,7 @@ class ApiResponse:
     content_type: str
     body: bytes
     last_modified: float | None = None
+    headers: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -158,9 +159,16 @@ def handle_post(
     model_client: ChatCompletionClient | None = None,
     state_model_client: ChatCompletionClient | None = None,
 ) -> ApiResponse | ApiStreamResponse:
-    route, _query = _parse_api_request(path)
+    route, query = _parse_api_request(path)
     if not route or route[0] != "api":
         raise ApiNotFound()
+
+    # Import endpoint receives raw ZIP bytes — skip JSON decode
+    if route == ["api", "scenarios", "import"]:
+        try:
+            return _scenario_import_response(vault, body, query)
+        except (VaultError, ApiBadRequest) as exc:
+            return _json_response({"error": type(exc).__name__, "message": str(exc)}, status=400)
 
     try:
         payload = _decode_json_body(body)
@@ -208,7 +216,7 @@ def handle_delete(path: str, vault: Vault) -> ApiResponse:
         raise ApiNotFound()
 
     try:
-        for handler in (_handle_scenario_content_delete, _handle_session_delete):
+        for handler in (_handle_scenario_content_delete, _handle_rag_memory_delete, _handle_session_delete):
             response = handler(route, query, vault)
             if response is not None:
                 return response
@@ -247,6 +255,9 @@ def _handle_persona_profile_get(route: list[str], _query: dict[str, list[str]], 
 
 
 def _handle_scenario_content_get(route: list[str], query: dict[str, list[str]], vault: Vault) -> ApiResponse | None:
+    if len(route) == 4 and route[:2] == ["api", "scenarios"] and route[3] == "export":
+        scenario_id = _validate_id(route[2], "scenario")
+        return _scenario_export_response(vault, scenario_id)
     if len(route) == 4 and route[:2] == ["api", "scenarios"] and route[3] == "source":
         scenario_id = _validate_id(route[2], "scenario")
         source_path = query.get("path", [""])[0]
@@ -270,12 +281,12 @@ def _handle_scenario_content_get(route: list[str], query: dict[str, list[str]], 
         return _json_response(_scenario_starts_response(vault, scenario_id))
     if len(route) == 6 and route[:2] == ["api", "scenarios"] and route[3] == "starts" and route[5] == "prompt-graph":
         scenario_id = _validate_id(route[2], "scenario")
-        start_id = _validate_id(route[4], "start")
-        return _json_response(_start_prompt_graph_response(vault, scenario_id, start_id))
+        starting_id = _validate_id(route[4], "start")
+        return _json_response(_start_prompt_graph_response(vault, scenario_id, starting_id))
     if len(route) == 6 and route[:2] == ["api", "scenarios"] and route[3] == "starts" and route[5] == "manifest":
         scenario_id = _validate_id(route[2], "scenario")
-        start_id = _validate_id(route[4], "start")
-        return _json_response(_start_manifest_response(vault, scenario_id, start_id))
+        starting_id = _validate_id(route[4], "start")
+        return _json_response(_start_manifest_response(vault, scenario_id, starting_id))
     if len(route) == 4 and route[:2] == ["api", "scenarios"] and route[3] == "prompt-preview":
         scenario_id = _validate_id(route[2], "scenario")
         return _json_response(_scenario_prompt_preview_response(vault, scenario_id, query))
@@ -483,12 +494,12 @@ def _handle_scenario_content_put(route: list[str], vault: Vault, payload: dict[s
         return _json_response({"scenario_id": scenario_id, "settings": saved})
     if len(route) == 6 and route[:2] == ["api", "scenarios"] and route[3] == "starts" and route[5] == "prompt-graph":
         scenario_id = _validate_id(route[2], "scenario")
-        start_id = _validate_id(route[4], "start")
-        return _update_start_prompt_graph_response(vault, scenario_id, start_id, payload)
+        starting_id = _validate_id(route[4], "start")
+        return _update_start_prompt_graph_response(vault, scenario_id, starting_id, payload)
     if len(route) == 6 and route[:2] == ["api", "scenarios"] and route[3] == "starts" and route[5] == "manifest":
         scenario_id = _validate_id(route[2], "scenario")
-        start_id = _validate_id(route[4], "start")
-        return _update_start_manifest_response(vault, scenario_id, start_id, payload)
+        starting_id = _validate_id(route[4], "start")
+        return _update_start_manifest_response(vault, scenario_id, starting_id, payload)
     return None
 
 
@@ -521,12 +532,42 @@ def _handle_scenario_content_delete(route: list[str], query: dict[str, list[str]
         return _json_response(_delete_scenario_source_file(vault, scenario_id, query))
     if len(route) == 5 and route[:2] == ["api", "scenarios"] and route[3] == "starts":
         scenario_id = _validate_id(route[2], "scenario")
-        start_id = _validate_id(route[4], "start")
+        starting_id = _validate_id(route[4], "start")
         try:
-            delete_start(vault, scenario_id, start_id)
+            delete_start(vault, scenario_id, starting_id)
         except StartError as exc:
             return _error_response(404, str(exc))
-        return _json_response({"scenario_id": scenario_id, "start_id": start_id, "deleted": True})
+        return _json_response({"scenario_id": scenario_id, "starting_id": starting_id, "deleted": True})
+    return None
+
+
+_ALLOWED_MEMORY_KINDS: frozenset[str] = frozenset({"session_summaries", "extracted_facts", "unresolved_threads"})
+
+
+def _handle_rag_memory_delete(route: list[str], _query: dict[str, list[str]], vault: Vault) -> ApiResponse | None:
+    # DELETE /api/scenarios/{id}/memory/{kind}/{memory_id}
+    if len(route) == 6 and route[:2] == ["api", "scenarios"] and route[3] == "memory":
+        scenario_id = _validate_id(route[2], "scenario")
+        kind = route[4]
+        memory_id = route[5]
+        if kind not in _ALLOWED_MEMORY_KINDS:
+            raise ApiBadRequest(f"Unknown memory kind: {kind!r}")
+        if not re.match(r'^[A-Za-z0-9_-]+$', memory_id):
+            raise ApiBadRequest(f"Invalid memory_id: {memory_id!r}")
+        load_scenario(vault, scenario_id)
+        mem_path = vault.resolve(f"rp/scenarios/{scenario_id}/memory/{kind}/{memory_id}.md")
+        if not mem_path.is_file():
+            return _json_response({"error": "not_found", "message": f"Memory not found: {kind}/{memory_id}"}, status=404)
+        mem_path.unlink()
+        from app.memory_summarizer import mark_rag_index_stale
+        mark_rag_index_stale(vault, scenario_id, [])
+        return _json_response({
+            "scenario_id": scenario_id,
+            "kind": kind,
+            "memory_id": memory_id,
+            "path": f"memory/{kind}/{memory_id}.md",
+            "deleted": True,
+        })
     return None
 
 
@@ -818,7 +859,7 @@ def _scenario_starts_response(vault: Vault, scenario_id: str) -> dict[str, Any]:
 
 def _create_start_response(vault: Vault, scenario_id: str, payload: dict[str, Any]) -> ApiResponse:
     load_scenario(vault, scenario_id)
-    start_id = _require_id(payload, "id")
+    starting_id = _require_id(payload, "id")
     name = payload.get("name", "")
     if not isinstance(name, str) or not name.strip():
         raise ApiBadRequest("name must be a non-empty string")
@@ -826,7 +867,7 @@ def _create_start_response(vault: Vault, scenario_id: str, payload: dict[str, An
     if not isinstance(body, str):
         raise ApiBadRequest("body must be a string")
     try:
-        info = create_start(vault, scenario_id, start_id, name.strip(), body)
+        info = create_start(vault, scenario_id, starting_id, name.strip(), body)
     except StartError as exc:
         return _error_response(409, str(exc))
     return _json_response({"scenario_id": scenario_id, "start": {"id": info.id, "name": info.name, "body": info.body}}, status=201)
@@ -997,9 +1038,9 @@ def _delete_scenario_source_file(vault: Vault, scenario_id: str, query: dict[str
     safe_path = _validate_deletable_scenario_source_path(_query_string(query, "path"))
     parts = safe_path.split("/")
     if parts[0] == "startings" and len(parts) == 2:
-        start_id = parts[1].removesuffix(".md")
+        starting_id = parts[1].removesuffix(".md")
         try:
-            delete_start(vault, scenario_id, start_id)
+            delete_start(vault, scenario_id, starting_id)
         except StartError as exc:
             raise ApiBadRequest(str(exc)) from exc
     else:
@@ -1036,12 +1077,12 @@ def _update_scenario_prompt_graph_response(vault: Vault, scenario_id: str, paylo
     )
 
 
-def _start_prompt_graph_response(vault: Vault, scenario_id: str, start_id: str) -> dict[str, Any]:
-    result = read_start_prompt_graph(vault, scenario_id, start_id)
+def _start_prompt_graph_response(vault: Vault, scenario_id: str, starting_id: str) -> dict[str, Any]:
+    result = read_start_prompt_graph(vault, scenario_id, starting_id)
     graph = result["graph"]
     return {
         "scenario_id": scenario_id,
-        "start_id": start_id,
+        "starting_id": starting_id,
         "own_graph": result["own_graph"],
         "source": result["source"],
         "graph": graph,
@@ -1049,15 +1090,15 @@ def _start_prompt_graph_response(vault: Vault, scenario_id: str, start_id: str) 
     }
 
 
-def _update_start_prompt_graph_response(vault: Vault, scenario_id: str, start_id: str, payload: dict[str, Any]) -> ApiResponse:
+def _update_start_prompt_graph_response(vault: Vault, scenario_id: str, starting_id: str, payload: dict[str, Any]) -> ApiResponse:
     graph = payload.get("graph", payload)
     if not isinstance(graph, dict):
         raise ApiBadRequest("prompt graph payload must be a JSON object")
-    saved = write_start_prompt_graph(vault, scenario_id, start_id, graph)
+    saved = write_start_prompt_graph(vault, scenario_id, starting_id, graph)
     return _json_response(
         {
             "scenario_id": scenario_id,
-            "start_id": start_id,
+            "starting_id": starting_id,
             "own_graph": True,
             "source": "start",
             "graph": saved,
@@ -1066,14 +1107,14 @@ def _update_start_prompt_graph_response(vault: Vault, scenario_id: str, start_id
     )
 
 
-def _start_manifest_response(vault: Vault, scenario_id: str, start_id: str) -> dict[str, Any]:
+def _start_manifest_response(vault: Vault, scenario_id: str, starting_id: str) -> dict[str, Any]:
     try:
-        manifest = read_start_manifest(vault, scenario_id, start_id)
+        manifest = read_start_manifest(vault, scenario_id, starting_id)
     except StartError as exc:
         raise ApiBadRequest(str(exc)) from exc
     return {
         "scenario_id": scenario_id,
-        "start_id": start_id,
+        "starting_id": starting_id,
         "manifest": {
             "name": manifest.name,
             "description": manifest.description,
@@ -1084,7 +1125,7 @@ def _start_manifest_response(vault: Vault, scenario_id: str, start_id: str) -> d
     }
 
 
-def _update_start_manifest_response(vault: Vault, scenario_id: str, start_id: str, payload: dict[str, Any]) -> ApiResponse:
+def _update_start_manifest_response(vault: Vault, scenario_id: str, starting_id: str, payload: dict[str, Any]) -> ApiResponse:
     name = payload.get("name", "")
     description = payload.get("description", "")
     lore_include = payload.get("lore_include", [])
@@ -1100,7 +1141,7 @@ def _update_start_manifest_response(vault: Vault, scenario_id: str, start_id: st
         manifest = write_start_manifest(
             vault,
             scenario_id,
-            start_id,
+            starting_id,
             name=name,
             description=description,
             lore_include=lore_include,
@@ -1111,7 +1152,7 @@ def _update_start_manifest_response(vault: Vault, scenario_id: str, start_id: st
         raise ApiBadRequest(str(exc)) from exc
     return _json_response({
         "scenario_id": scenario_id,
-        "start_id": start_id,
+        "starting_id": starting_id,
         "manifest": {
             "name": manifest.name,
             "description": manifest.description,
@@ -1366,7 +1407,6 @@ def _create_session_response(vault: Vault, payload: dict[str, Any]) -> ApiRespon
     rp_profile_id = _require_id(payload, "rp_profile_id")
     summary_profile_id = _optional_id(payload, "summary_profile_id")
     starting_id = _optional_id(payload, "starting_id")
-    start_id = _optional_id(payload, "start_id")
     session_id = _optional_id(payload, "session_id") or next_session_id(vault, scenario_id)
     display_name = payload.get("display_name")
     if display_name is not None and not isinstance(display_name, str):
@@ -1380,14 +1420,14 @@ def _create_session_response(vault: Vault, payload: dict[str, Any]) -> ApiRespon
     starting = load_starting(vault, scenario_id, starting_id) if starting_id is not None else None
 
     initial_state_vault_path: str | None = None
-    if start_id is not None:
+    if starting_id is not None:
         try:
-            manifest = read_start_manifest(vault, scenario_id, start_id)
+            manifest = read_start_manifest(vault, scenario_id, starting_id)
         except StartError as exc:
             raise ApiBadRequest(str(exc)) from exc
         settings = read_scenario_settings(vault, scenario_id)
         if settings.get("prompt_graph_mode") == "per_start":
-            initial_state_vault_path = resolve_initial_state_path(scenario_id, start_id, manifest)
+            initial_state_vault_path = resolve_initial_state_path(scenario_id, starting_id, manifest)
 
     metadata = create_session(
         vault,
@@ -1397,12 +1437,11 @@ def _create_session_response(vault: Vault, payload: dict[str, Any]) -> ApiRespon
             persona_id=persona_id,
             rp_profile_id=rp_profile_id,
             summary_profile_id=summary_profile_id,
-            start_id=start_id,
+            starting_id=starting_id,
         ),
         initial_state_vault_path=initial_state_vault_path,
     )
     if starting is not None:
-        metadata["starting_id"] = starting.id
         append_session_log(
             vault,
             scenario_id,
@@ -1414,7 +1453,7 @@ def _create_session_response(vault: Vault, payload: dict[str, Any]) -> ApiRespon
         )
     if display_name:
         metadata["display_name"] = display_name
-    if start_id is not None or starting is not None or display_name:
+    if starting_id is not None or starting is not None or display_name:
         write_session_metadata(vault, scenario_id, session_id, metadata)
     return _json_response({"session": metadata}, status=201)
 
@@ -1623,7 +1662,6 @@ def _update_session_starting_response(
         metadata.pop("starting_id", None)
     write_session_metadata(vault, scenario_id, session_id, metadata)
     return _session_log_response(vault, scenario_id, session_id)
-
 
 def _validate_pin_paths(paths: list[Any], expected_folder: str) -> list[str]:
     validated: list[str] = []
@@ -2030,15 +2068,19 @@ def _timeline_excerpt(content: str, limit: int = 80) -> str:
 
 def _image_response(vault: Vault, scenario_id: str, character_id: str, filename: str) -> ApiResponse:
     scenario_id = _validate_id(scenario_id, "scenario")
-    if not filename.endswith(".png"):
+    dot_pos = filename.rfind(".")
+    if dot_pos < 0:
         raise ImageMarkerError(f"Invalid image filename: {filename}")
-    situation_id = filename.removesuffix(".png")
-    path = image_asset_path(vault, scenario_id, character_id, situation_id)
+    extension = filename[dot_pos:]
+    if extension not in ALLOWED_IMAGE_EXTENSIONS:
+        raise ImageMarkerError(f"Invalid image filename: {filename}")
+    situation_id = filename[:dot_pos]
+    path = image_asset_path(vault, scenario_id, character_id, situation_id, extension)
     if not path.is_file():
         return _json_response({"error": "not_found", "message": "Image asset not found"}, status=404)
     return ApiResponse(
         status=200,
-        content_type="image/png",
+        content_type=ALLOWED_IMAGE_EXTENSIONS[extension],
         body=path.read_bytes(),
         last_modified=path.stat().st_mtime,
     )
@@ -2369,3 +2411,40 @@ def _continue_session_message_response(
         content_type="application/json; charset=utf-8",
         body=_on_success(result.content, getattr(result, "token_usage", {})),
     )
+
+
+# ---------------------------------------------------------------------------
+# ZIP export / import
+# ---------------------------------------------------------------------------
+
+def _scenario_export_response(vault: Vault, scenario_id: str) -> ApiResponse:
+    from app.scenario_zip import export_scenario_zip
+    from app.vault import VaultPathError
+    try:
+        zip_bytes = export_scenario_zip(vault, scenario_id)
+    except VaultPathError as exc:
+        return _json_response({"error": "not_found", "message": str(exc)}, status=404)
+    return ApiResponse(
+        status=200,
+        content_type="application/zip",
+        body=zip_bytes,
+        headers=(("Content-Disposition", f'attachment; filename="{scenario_id}.zip"'),),
+    )
+
+
+def _scenario_import_response(
+    vault: Vault,
+    zip_bytes: bytes,
+    query: dict[str, list[str]],
+) -> ApiResponse:
+    from app.scenario_zip import ScenarioAlreadyExistsError, ScenarioZipError, import_scenario_zip
+    scenario_id = query.get("scenario_id", [""])[0].strip()
+    if not scenario_id:
+        raise ApiBadRequest("scenario_id query parameter is required")
+    try:
+        result = import_scenario_zip(vault, zip_bytes, scenario_id)
+    except ScenarioAlreadyExistsError as exc:
+        return _json_response({"error": "ScenarioAlreadyExistsError", "message": str(exc)}, status=409)
+    except ScenarioZipError as exc:
+        return _json_response({"error": "ScenarioZipError", "message": str(exc)}, status=400)
+    return _json_response(result, status=201)

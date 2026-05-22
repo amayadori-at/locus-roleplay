@@ -83,7 +83,7 @@ class LocusStaticHandler(SimpleHTTPRequestHandler):
         if isinstance(response, ApiStreamResponse):
             self._send_stream(response)
             return
-        self._send_bytes(response.status, response.body, response.content_type, response.last_modified)
+        self._send_bytes(response.status, response.body, response.content_type, response.last_modified, response.headers)
 
     def _handle_api_post(self) -> None:
         try:
@@ -99,7 +99,7 @@ class LocusStaticHandler(SimpleHTTPRequestHandler):
         if isinstance(response, ApiStreamResponse):
             self._send_stream(response)
             return
-        self._send_bytes(response.status, response.body, response.content_type)
+        self._send_bytes(response.status, response.body, response.content_type, extra_headers=response.headers)
 
     def _handle_api_put(self) -> None:
         try:
@@ -112,7 +112,7 @@ class LocusStaticHandler(SimpleHTTPRequestHandler):
         except ApiNotFound:
             self._send_bytes(404, b'{"error":"not_found"}', "application/json; charset=utf-8")
             return
-        self._send_bytes(response.status, response.body, response.content_type)
+        self._send_bytes(response.status, response.body, response.content_type, extra_headers=response.headers)
 
     def _handle_api_delete(self) -> None:
         try:
@@ -123,10 +123,15 @@ class LocusStaticHandler(SimpleHTTPRequestHandler):
         except ApiNotFound:
             self._send_bytes(404, b'{"error":"not_found"}', "application/json; charset=utf-8")
             return
-        self._send_bytes(response.status, response.body, response.content_type)
+        self._send_bytes(response.status, response.body, response.content_type, extra_headers=response.headers)
 
     def _send_bytes(
-        self, status: int, body: bytes, content_type: str, last_modified: float | None = None
+        self,
+        status: int,
+        body: bytes,
+        content_type: str,
+        last_modified: float | None = None,
+        extra_headers: tuple[tuple[str, str], ...] = (),
     ) -> None:
         if last_modified is not None:
             ims = self.headers.get("If-Modified-Since", "")
@@ -150,6 +155,8 @@ class LocusStaticHandler(SimpleHTTPRequestHandler):
             self.send_header("Last-Modified", self.date_time_string(int(last_modified)))
         else:
             self.send_header("Cache-Control", "no-store")
+        for name, value in extra_headers:
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 

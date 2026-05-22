@@ -18,7 +18,7 @@ class StartError(VaultError):
 
 @dataclass(frozen=True)
 class StartManifest:
-    start_id: str
+    starting_id: str
     name: str
     description: str
     lore_include: list[str]
@@ -39,33 +39,33 @@ def list_starts(vault: Vault, scenario_id: str) -> list[StartInfo]:
     _validate_scenario_id(scenario_id)
     ids = list_startings(vault, scenario_id)
     result = []
-    for start_id in ids:
-        starting = load_starting(vault, scenario_id, start_id)
+    for starting_id in ids:
+        starting = load_starting(vault, scenario_id, starting_id)
         has_manifest = vault.resolve(
-            f"rp/scenarios/{scenario_id}/startings/{start_id}/manifest.yaml"
+            f"rp/scenarios/{scenario_id}/startings/{starting_id}/manifest.yaml"
         ).is_file()
-        result.append(StartInfo(id=start_id, name=starting.name, body=starting.body, has_manifest=has_manifest))
+        result.append(StartInfo(id=starting_id, name=starting.name, body=starting.body, has_manifest=has_manifest))
     return result
 
 
-def read_start_manifest(vault: Vault, scenario_id: str, start_id: str) -> StartManifest:
-    """Read startings/{start_id}/manifest.yaml.
+def read_start_manifest(vault: Vault, scenario_id: str, starting_id: str) -> StartManifest:
+    """Read startings/{starting_id}/manifest.yaml.
 
     If the manifest file is absent, returns a default manifest with no Lore filtering.
     Raises StartError if the start .md itself does not exist.
     """
-    _validate_ids(scenario_id, start_id)
-    desc_path = vault.resolve(f"rp/scenarios/{scenario_id}/startings/{start_id}.md")
+    _validate_ids(scenario_id, starting_id)
+    desc_path = vault.resolve(f"rp/scenarios/{scenario_id}/startings/{starting_id}.md")
     if not desc_path.exists():
-        raise StartError(f"Start not found: {start_id}")
+        raise StartError(f"Start not found: {starting_id}")
 
-    manifest_path = f"rp/scenarios/{scenario_id}/startings/{start_id}/manifest.yaml"
+    manifest_path = f"rp/scenarios/{scenario_id}/startings/{starting_id}/manifest.yaml"
     manifest_file = vault.resolve(manifest_path)
 
     if not manifest_file.exists():
-        starting = load_starting(vault, scenario_id, start_id)
+        starting = load_starting(vault, scenario_id, starting_id)
         return StartManifest(
-            start_id=start_id,
+            starting_id=starting_id,
             name=starting.name,
             description="",
             lore_include=[],
@@ -88,7 +88,7 @@ def read_start_manifest(vault: Vault, scenario_id: str, start_id: str) -> StartM
 
     name = raw.get("name", "")
     if not isinstance(name, str) or not name.strip():
-        starting = load_starting(vault, scenario_id, start_id)
+        starting = load_starting(vault, scenario_id, starting_id)
         name = starting.name
 
     description = raw.get("description", "")
@@ -96,7 +96,7 @@ def read_start_manifest(vault: Vault, scenario_id: str, start_id: str) -> StartM
         description = ""
 
     return StartManifest(
-        start_id=start_id,
+        starting_id=starting_id,
         name=name,
         description=description,
         lore_include=lore_include,
@@ -125,13 +125,13 @@ def filter_lore_ids(all_lore_ids: list[str], manifest: StartManifest) -> list[st
     return ids
 
 
-def resolve_initial_state_path(scenario_id: str, start_id: str, manifest: StartManifest) -> str:
+def resolve_initial_state_path(scenario_id: str, starting_id: str, manifest: StartManifest) -> str:
     """Return the vault-relative path for the initial state file of a start.
 
     Falls back to the scenario-level initial state if manifest has no override.
     """
     if manifest.initial_state_path:
-        return f"rp/scenarios/{scenario_id}/startings/{start_id}/{manifest.initial_state_path}"
+        return f"rp/scenarios/{scenario_id}/startings/{starting_id}/{manifest.initial_state_path}"
     return f"rp/scenarios/{scenario_id}/state/current.json"
 
 
@@ -166,22 +166,22 @@ def _parse_initial_state_path(raw: dict[str, Any], manifest_path: str) -> str | 
 def write_start_manifest(
     vault: Vault,
     scenario_id: str,
-    start_id: str,
+    starting_id: str,
     name: str,
     description: str,
     lore_include: list[str],
     lore_exclude: list[str],
     initial_state_path: str | None,
 ) -> StartManifest:
-    """Write startings/{start_id}/manifest.yaml.
+    """Write startings/{starting_id}/manifest.yaml.
 
     Validates all IDs and the initial_state filename before writing.
     Raises StartError if the start .md does not exist or inputs are invalid.
     """
-    _validate_ids(scenario_id, start_id)
-    desc_path = vault.resolve(f"rp/scenarios/{scenario_id}/startings/{start_id}.md")
+    _validate_ids(scenario_id, starting_id)
+    desc_path = vault.resolve(f"rp/scenarios/{scenario_id}/startings/{starting_id}.md")
     if not desc_path.exists():
-        raise StartError(f"Start not found: {start_id}")
+        raise StartError(f"Start not found: {starting_id}")
 
     if not isinstance(name, str) or not name.strip():
         raise StartError("manifest name must not be empty")
@@ -218,12 +218,12 @@ def write_start_manifest(
             raise StartError("initial_state must be a .json filename")
         validated_initial = initial_state_path
 
-    manifest_dir = vault.resolve(f"rp/scenarios/{scenario_id}/startings/{start_id}")
+    manifest_dir = vault.resolve(f"rp/scenarios/{scenario_id}/startings/{starting_id}")
     manifest_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = manifest_dir / "manifest.yaml"
 
     data: dict[str, Any] = {
-        "id": start_id,
+        "id": starting_id,
         "name": name.strip(),
     }
     if description.strip():
@@ -238,7 +238,7 @@ def write_start_manifest(
     manifest_path.write_text(yaml.dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
     return StartManifest(
-        start_id=start_id,
+        starting_id=starting_id,
         name=name.strip(),
         description=description.strip(),
         lore_include=validated_include,
@@ -250,37 +250,37 @@ def write_start_manifest(
 def create_start(
     vault: Vault,
     scenario_id: str,
-    start_id: str,
+    starting_id: str,
     name: str,
     body: str = "",
 ) -> StartInfo:
-    """Create a new start: writes startings/{start_id}.md.
+    """Create a new start: writes startings/{starting_id}.md.
 
     Raises StartError if the start already exists.
     """
-    _validate_ids(scenario_id, start_id)
+    _validate_ids(scenario_id, starting_id)
     if not name.strip():
         raise StartError("Start name must not be empty")
-    desc_path = vault.resolve(f"rp/scenarios/{scenario_id}/startings/{start_id}.md")
+    desc_path = vault.resolve(f"rp/scenarios/{scenario_id}/startings/{starting_id}.md")
     if desc_path.exists():
-        raise StartError(f"Start already exists: {start_id}")
+        raise StartError(f"Start already exists: {starting_id}")
     desc_path.parent.mkdir(parents=True, exist_ok=True)
-    content = f"---\ntype: starting\nid: {start_id}\nname: {name}\n---\n\n{body}"
+    content = f"---\ntype: starting\nid: {starting_id}\nname: {name}\n---\n\n{body}"
     desc_path.write_text(content, encoding="utf-8")
-    return StartInfo(id=start_id, name=name, body=body, has_manifest=False)
+    return StartInfo(id=starting_id, name=name, body=body, has_manifest=False)
 
 
-def delete_start(vault: Vault, scenario_id: str, start_id: str) -> None:
-    """Delete startings/{start_id}.md and startings/{start_id}/ directory.
+def delete_start(vault: Vault, scenario_id: str, starting_id: str) -> None:
+    """Delete startings/{starting_id}.md and startings/{starting_id}/ directory.
 
     Raises StartError if the start does not exist.
     """
-    _validate_ids(scenario_id, start_id)
-    desc_path = vault.resolve(f"rp/scenarios/{scenario_id}/startings/{start_id}.md")
+    _validate_ids(scenario_id, starting_id)
+    desc_path = vault.resolve(f"rp/scenarios/{scenario_id}/startings/{starting_id}.md")
     if not desc_path.exists():
-        raise StartError(f"Start not found: {start_id}")
+        raise StartError(f"Start not found: {starting_id}")
     desc_path.unlink()
-    subdir = vault.resolve(f"rp/scenarios/{scenario_id}/startings/{start_id}")
+    subdir = vault.resolve(f"rp/scenarios/{scenario_id}/startings/{starting_id}")
     if subdir.exists() and subdir.is_dir():
         shutil.rmtree(subdir)
 
@@ -290,7 +290,7 @@ def _validate_scenario_id(scenario_id: str) -> None:
         raise StartError(f"Invalid scenario id: {scenario_id}")
 
 
-def _validate_ids(scenario_id: str, start_id: str) -> None:
+def _validate_ids(scenario_id: str, starting_id: str) -> None:
     _validate_scenario_id(scenario_id)
-    if not is_locus_id(start_id):
-        raise StartError(f"Invalid start id: {start_id}")
+    if not is_locus_id(starting_id):
+        raise StartError(f"Invalid start id: {starting_id}")

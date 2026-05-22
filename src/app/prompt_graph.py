@@ -357,16 +357,16 @@ def _node(node_id: str, node_type: str, order: int, **extra: Any) -> dict[str, A
     return {"id": node_id, "type": node_type, "order": order, **extra}
 
 
-def has_start_prompt_graph(vault: Vault, scenario_id: str, start_id: str) -> bool:
+def has_start_prompt_graph(vault: Vault, scenario_id: str, starting_id: str) -> bool:
     _validate_scenario_id(scenario_id)
-    _validate_start_id(start_id)
-    return vault.resolve(_start_prompt_graph_path(scenario_id, start_id)).exists()
+    _validate_starting_id(starting_id)
+    return vault.resolve(_start_prompt_graph_path(scenario_id, starting_id)).exists()
 
 
-def read_start_prompt_graph(vault: Vault, scenario_id: str, start_id: str) -> dict[str, Any]:
+def read_start_prompt_graph(vault: Vault, scenario_id: str, starting_id: str) -> dict[str, Any]:
     _validate_scenario_id(scenario_id)
-    _validate_start_id(start_id)
-    path = _start_prompt_graph_path(scenario_id, start_id)
+    _validate_starting_id(starting_id)
+    path = _start_prompt_graph_path(scenario_id, starting_id)
     if not vault.resolve(path).exists():
         base = read_prompt_graph(vault, scenario_id)
         return {"graph": base, "own_graph": False, "source": "scenario"}
@@ -379,11 +379,11 @@ def read_start_prompt_graph(vault: Vault, scenario_id: str, start_id: str) -> di
     return {"graph": graph, "own_graph": True, "source": "start"}
 
 
-def write_start_prompt_graph(vault: Vault, scenario_id: str, start_id: str, graph: dict[str, Any]) -> dict[str, Any]:
+def write_start_prompt_graph(vault: Vault, scenario_id: str, starting_id: str, graph: dict[str, Any]) -> dict[str, Any]:
     _validate_scenario_id(scenario_id)
-    _validate_start_id(start_id)
+    _validate_starting_id(starting_id)
     normalized = validate_prompt_graph(vault, scenario_id, graph)
-    path = vault.resolve(_start_prompt_graph_path(scenario_id, start_id))
+    path = vault.resolve(_start_prompt_graph_path(scenario_id, starting_id))
     path.parent.mkdir(parents=True, exist_ok=True)
     raw = json.dumps(normalized, ensure_ascii=False, indent=2) + "\n"
     temp_path = path.with_name(f".{path.name}.tmp")
@@ -396,8 +396,8 @@ def write_start_prompt_graph(vault: Vault, scenario_id: str, start_id: str, grap
     return normalized
 
 
-def _start_prompt_graph_path(scenario_id: str, start_id: str) -> str:
-    return f"rp/scenarios/{scenario_id}/startings/{start_id}/prompt_graph.json"
+def _start_prompt_graph_path(scenario_id: str, starting_id: str) -> str:
+    return f"rp/scenarios/{scenario_id}/startings/{starting_id}/prompt_graph.json"
 
 
 def _prompt_graph_path(scenario_id: str) -> str:
@@ -409,6 +409,6 @@ def _validate_scenario_id(scenario_id: str) -> None:
         raise PromptGraphError(f"Invalid scenario id: {scenario_id}")
 
 
-def _validate_start_id(start_id: str) -> None:
-    if not is_locus_id(start_id):
-        raise PromptGraphError(f"Invalid start id: {start_id}")
+def _validate_starting_id(starting_id: str) -> None:
+    if not is_locus_id(starting_id):
+        raise PromptGraphError(f"Invalid start id: {starting_id}")

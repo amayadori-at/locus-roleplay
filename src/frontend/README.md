@@ -32,9 +32,9 @@ LOCUS_BACKEND_URL=http://127.0.0.1:9877 npm run dev
 ## ビルド・チェック・テスト
 
 ```bash
-npm run build     # プロダクションビルド（frontend/dist/ に出力）
-npm run check     # svelte-check（型チェック）
 npm test          # vitest（ユニットテスト + コンポーネントテスト）
+npm run check     # svelte-check（型チェック）
+npm run build     # プロダクションビルド（frontend/dist/ に出力）
 ```
 
 ビルド後は repo root で `python app/main.py` を起動すると `frontend/dist` が自動的に配信されます。

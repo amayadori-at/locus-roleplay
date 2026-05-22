@@ -10,7 +10,15 @@ from app.vault import Vault, VaultError
 
 
 MARKER_PATTERN = re.compile(r"\[\[image:\s*([^\]]+?)\s*\]\]")
-IMAGE_PATH_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+\.png$")
+_ALLOWED_IMG_EXTS = "png|jpg|jpeg|webp|gif"
+IMAGE_PATH_PATTERN = re.compile(rf"^[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+\.(?:{_ALLOWED_IMG_EXTS})$")
+ALLOWED_IMAGE_EXTENSIONS: dict[str, str] = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
 MissingImageBehavior = Literal["fallback_normal", "hide", "show_warning"]
 
 
@@ -38,13 +46,16 @@ class ImageSegment:
 Segment = TextSegment | ImageSegment
 
 
-def validate_image_marker_path(marker_path: str) -> tuple[str, str]:
+def validate_image_marker_path(marker_path: str) -> tuple[str, str, str]:
+    """Return (character_id, situation_id, extension) where extension includes the dot."""
     candidate = marker_path.strip()
     if not IMAGE_PATH_PATTERN.fullmatch(candidate):
         raise ImageMarkerError(f"Invalid image marker path: {marker_path}")
     character_id, filename = candidate.split("/", 1)
-    situation_id = filename.removesuffix(".png")
-    return character_id, situation_id
+    dot_pos = filename.rfind(".")
+    situation_id = filename[:dot_pos]
+    extension = filename[dot_pos:]
+    return character_id, situation_id, extension
 
 
 def parse_image_markers(
@@ -65,12 +76,13 @@ def parse_image_markers(
             segments.append(TextSegment(type="text", content=text[cursor : match.start()]))
 
         marker_path = match.group(1)
-        character_id, situation_id = validate_image_marker_path(marker_path)
+        character_id, situation_id, extension = validate_image_marker_path(marker_path)
         image_segment = _resolve_image_segment(
             scenario=scenario,
             vault=vault,
             character_id=character_id,
             situation_id=situation_id,
+            extension=extension,
             behavior=behavior,
         )
         if image_segment is not None:
@@ -82,14 +94,27 @@ def parse_image_markers(
     return [segment for segment in segments if not (segment.type == "text" and segment.content == "")]
 
 
-def image_asset_path(vault: Vault, scenario_id: str, character_id: str, situation_id: str) -> Path:
-    validate_image_marker_path(f"{character_id}/{situation_id}.png")
-    return vault.resolve(f"rp/scenarios/{scenario_id}/assets/images/{character_id}/{situation_id}.png")
+def image_asset_path(
+    vault: Vault,
+    scenario_id: str,
+    character_id: str,
+    situation_id: str,
+    extension: str = ".png",
+) -> Path:
+    validate_image_marker_path(f"{character_id}/{situation_id}{extension}")
+    return vault.resolve(
+        f"rp/scenarios/{scenario_id}/assets/images/{character_id}/{situation_id}{extension}"
+    )
 
 
-def image_asset_url(scenario_id: str, character_id: str, situation_id: str) -> str:
-    validate_image_marker_path(f"{character_id}/{situation_id}.png")
-    return f"/api/assets/images/{scenario_id}/{character_id}/{situation_id}.png"
+def image_asset_url(
+    scenario_id: str,
+    character_id: str,
+    situation_id: str,
+    extension: str = ".png",
+) -> str:
+    validate_image_marker_path(f"{character_id}/{situation_id}{extension}")
+    return f"/api/assets/images/{scenario_id}/{character_id}/{situation_id}{extension}"
 
 
 def _resolve_image_segment(
@@ -98,6 +123,7 @@ def _resolve_image_segment(
     vault: Vault | None,
     character_id: str,
     situation_id: str,
+    extension: str,
     behavior: MissingImageBehavior,
 ) -> ImageSegment | None:
     resolved_character_id = character_id
@@ -106,11 +132,11 @@ def _resolve_image_segment(
     warning: str | None = None
 
     if vault is not None:
-        requested = image_asset_path(vault, scenario.id, character_id, situation_id)
+        requested = image_asset_path(vault, scenario.id, character_id, situation_id, extension)
         if not requested.is_file():
             exists = False
             if behavior == "fallback_normal" and situation_id != "normal":
-                fallback = image_asset_path(vault, scenario.id, character_id, "normal")
+                fallback = image_asset_path(vault, scenario.id, character_id, "normal", extension)
                 if fallback.is_file():
                     resolved_situation_id = "normal"
                     exists = True
@@ -119,12 +145,12 @@ def _resolve_image_segment(
             if not exists and behavior == "fallback_normal":
                 return None
             if not exists and behavior == "show_warning":
-                warning = f"Missing image asset: {character_id}/{situation_id}.png"
+                warning = f"Missing image asset: {character_id}/{situation_id}{extension}"
 
     return ImageSegment(
         type="image",
-        path=f"{resolved_character_id}/{resolved_situation_id}.png",
-        url=image_asset_url(scenario.id, resolved_character_id, resolved_situation_id),
+        path=f"{resolved_character_id}/{resolved_situation_id}{extension}",
+        url=image_asset_url(scenario.id, resolved_character_id, resolved_situation_id, extension),
         character_id=resolved_character_id,
         situation_id=resolved_situation_id,
         exists=exists,

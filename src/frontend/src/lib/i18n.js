@@ -72,6 +72,12 @@ export const messages = {
     "front.nameRequired": "表示名を入力してください。",
     "front.duplicateScenarioId": "同じ ID のシナリオが既に存在します。",
     "front.createScenarioError": "シナリオを作成できませんでした。",
+    "front.filterScenarios": "シナリオを絞り込む",
+    "front.importZip": "ZIP からインポート",
+    "front.importZipScenarioId": "インポート先のシナリオ ID を入力してください",
+    "front.importZipSuccess": "インポートしました",
+    "front.importZipError": "インポートに失敗しました",
+    "front.vaultNotConfigured": "Vault が設定されていません。サーバーの LOCUS_VAULT_ROOT 環境変数を確認してください。",
     "timeline.parentNone": "親セッションなし",
     "timeline.currentSession": "現在のセッション",
     "timeline.parent": "親",
@@ -243,6 +249,7 @@ export const messages = {
     "session.openState": "State を開く",
     "session.openTimeline": "Timeline を開く",
     "session.closeRightPanel": "右パネルを閉じる",
+    "session.openRightPanel": "右パネルを開く",
     "session.sessionOps": "セッション操作",
     "session.sessionInfo": "セッション情報",
     "session.sessionSettings": "セッション設定",
@@ -387,7 +394,13 @@ export const messages = {
     "editor.graphInherited": "（シナリオ共通グラフを表示中 — 保存するとこのスタート専用になります）",
     "editor.selectStartTab": "上部のスタートタブを選択してください。",
     "editor.startGraphIncomplete": "専用グラフ未設定",
-    "editor.copy": "コピー"
+    "editor.copy": "コピー",
+    "editor.exportZip": "ZIP でエクスポート",
+    "editor.exportZipError": "エクスポートに失敗しました",
+    "editor.memoryList": "Memory 一覧",
+    "editor.memoryDeleteConfirm": "このMemoryファイルを削除しますか？",
+    "editor.memoryDeleted": "削除しました（RAGインデックスは次回再構築されます）",
+    "editor.memoryDeleteError": "削除に失敗しました"
   },
   en: {
     "app.closeSidebar": "Close side view",
@@ -453,6 +466,12 @@ export const messages = {
     "front.nameRequired": "Enter a display name.",
     "front.duplicateScenarioId": "A scenario with the same ID already exists.",
     "front.createScenarioError": "Could not create the scenario.",
+    "front.filterScenarios": "Filter scenarios",
+    "front.importZip": "Import from ZIP",
+    "front.importZipScenarioId": "Enter scenario ID for import",
+    "front.importZipSuccess": "Import successful",
+    "front.importZipError": "Import failed",
+    "front.vaultNotConfigured": "Vault is not configured. Check the LOCUS_VAULT_ROOT environment variable on the server.",
     "timeline.parentNone": "No parent session",
     "timeline.currentSession": "Current session",
     "timeline.parent": "Parent",
@@ -624,6 +643,7 @@ export const messages = {
     "session.openState": "Open State",
     "session.openTimeline": "Open Timeline",
     "session.closeRightPanel": "Close right panel",
+    "session.openRightPanel": "Open right panel",
     "session.sessionOps": "Session actions",
     "session.sessionInfo": "Session info",
     "session.sessionSettings": "Session settings",
@@ -768,7 +788,13 @@ export const messages = {
     "editor.graphInherited": "(Showing scenario graph — saving will create a dedicated copy for this start)",
     "editor.selectStartTab": "Select a start tab above.",
     "editor.startGraphIncomplete": "No dedicated graph",
-    "editor.copy": "Copy"
+    "editor.copy": "Copy",
+    "editor.exportZip": "Export ZIP",
+    "editor.exportZipError": "Export failed",
+    "editor.memoryList": "Memory Files",
+    "editor.memoryDeleteConfirm": "Delete this memory file?",
+    "editor.memoryDeleted": "Deleted (RAG index will be rebuilt)",
+    "editor.memoryDeleteError": "Delete failed"
   }
 };
 

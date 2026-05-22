@@ -110,7 +110,7 @@ def list_startings(vault: Vault, scenario_id: str) -> list[str]:
 
 def load_starting(vault: Vault, scenario_id: str, starting_id: str) -> StartingMessage:
     _validate_id(scenario_id, "scenario")
-    _validate_id(starting_id, "starting")
+    _validate_id(starting_id, "start")
     path = f"rp/scenarios/{scenario_id}/startings/{starting_id}.md"
     document = _load_required_markdown(vault, path)
     metadata = dict(document.frontmatter)

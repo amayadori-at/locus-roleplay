@@ -118,6 +118,14 @@
   align-items: stretch;
 }
 
+.session-workspace.desktop-right-closed {
+  grid-template-columns: 1fr;
+}
+
+.session-workspace.desktop-right-closed .panel.state-panel {
+  display: none;
+}
+
 .side-note {
   margin: 0;
   color: var(--c-text-muted);
@@ -244,10 +252,18 @@
   font-size: 15px;
 }
 
-.markdown-body :is(ul, ol) {
+.markdown-body ul {
   display: grid;
   gap: 6px;
   padding-left: 1.35rem;
+  list-style: disc;
+}
+
+.markdown-body ol {
+  display: grid;
+  gap: 6px;
+  padding-left: 1.35rem;
+  list-style: decimal;
 }
 
 .markdown-body li {
@@ -670,9 +686,13 @@
 }
 
 .mobile-right-tabs,
-.mobile-overlay-scrim,
-.mobile-overlay-close {
+.mobile-overlay-scrim {
   display: none;
+}
+
+.mobile-overlay-close {
+  display: inline-grid;
+  place-items: center;
 }
 
 .state-panel-toolbar {

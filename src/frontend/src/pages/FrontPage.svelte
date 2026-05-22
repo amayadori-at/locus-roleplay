@@ -17,7 +17,8 @@
     X
   } from "lucide-svelte";
   import { onMount } from "svelte";
-  import { createScenario, deleteSession, listScenarioSessions, listScenarios, updateSessionSettings } from "../lib/api.js";
+  import { ArchiveRestore, FileArchive } from "lucide-svelte";
+  import { createScenario, deleteSession, exportScenario, importScenario, listScenarioSessions, listScenarios, updateSessionSettings } from "../lib/api.js";
   import { formatDateTime, locale, t } from "../lib/i18n.js";
   import { renderMarkdown } from "../lib/markdown.js";
 
@@ -87,6 +88,16 @@
   let newScenarioName = "";
   let newScenarioDescription = "";
   let createScenarioError = "";
+  let scenarioFilter = "";
+  let importingZip = false;
+  let exportingZip = false;
+
+  $: filteredScenarios = scenarioFilter.trim()
+    ? scenarios.filter((s) => {
+        const q = scenarioFilter.trim().toLowerCase();
+        return s.id.includes(q) || (s.name || "").toLowerCase().includes(q);
+      })
+    : scenarios;
 
   onMount(async () => {
     await loadScenarios();
@@ -106,7 +117,13 @@
         await loadSessions(selectedScenarioId);
       }
     } catch (caught) {
-      scenarioError = caught instanceof Error ? caught.message : $t("front.loadScenariosError");
+      const err = /** @type {any} */ (caught);
+      const payload = err?.payload;
+      if (payload?.error === "vault_not_configured" || err?.status === 500) {
+        scenarioError = "vault_not_configured";
+      } else {
+        scenarioError = caught instanceof Error ? caught.message : $t("front.loadScenariosError");
+      }
     } finally {
       loadingScenarios = false;
     }
@@ -133,7 +150,12 @@
     renamingSessionId = "";
     try {
       const payload = await listScenarioSessions(scenarioId);
-      sessions = payload.sessions || [];
+      sessions = (payload.sessions || []).slice().sort((/** @type {any} */ a, /** @type {any} */ b) => {
+        const ta = a.updated_at ? Date.parse(a.updated_at) : 0;
+        const tb = b.updated_at ? Date.parse(b.updated_at) : 0;
+        if (tb !== ta) return tb - ta;
+        return (b.session_id || "").localeCompare(a.session_id || "");
+      });
     } catch (caught) {
       sessionError = caught instanceof Error ? caught.message : $t("front.loadSessionsError");
     } finally {
@@ -350,6 +372,53 @@
     createScenarioError = "";
   }
 
+  function triggerImportZip() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".zip";
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const defaultId = file.name.replace(/\.zip$/i, "").replace(/[^a-z0-9_-]/gi, "_").toLowerCase();
+      const scenarioId = window.prompt($t("front.importZipScenarioId"), defaultId);
+      if (!scenarioId) return;
+      importingZip = true;
+      try {
+        await importScenario(file, scenarioId.trim());
+        const listPayload = await listScenarios();
+        scenarios = listPayload.scenarios || [];
+        selectedScenarioId = scenarioId.trim();
+        activeScenario = scenarios.find((s) => s.id === selectedScenarioId) || null;
+        if (selectedScenarioId) await loadSessions(selectedScenarioId);
+      } catch (caught) {
+        window.alert(caught instanceof Error ? caught.message : $t("front.importZipError"));
+      } finally {
+        importingZip = false;
+      }
+    };
+    input.click();
+  }
+
+  async function doExportZip() {
+    if (!selectedScenarioId || exportingZip) return;
+    exportingZip = true;
+    try {
+      const blob = await exportScenario(selectedScenarioId);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${selectedScenarioId}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (caught) {
+      window.alert(caught instanceof Error ? caught.message : $t("editor.exportZipError"));
+    } finally {
+      exportingZip = false;
+    }
+  }
+
   async function createNewScenario() {
     if (creatingScenario) {
       return;
@@ -394,7 +463,7 @@
 </div>
 
 {#if scenarioError}
-  <p class="notice">{scenarioError}</p>
+  <p class="notice">{scenarioError === "vault_not_configured" ? $t("front.vaultNotConfigured") : scenarioError}</p>
 {:else if loadingScenarios}
   <p class="notice">{$t("front.loadingScenarios")}</p>
 {:else}
@@ -402,18 +471,36 @@
     <section class="panel" aria-labelledby="scenario-list-heading">
       <div class="source-tree-header">
         <h3 id="scenario-list-heading"><Layers size={18} aria-hidden="true" /> {$t("front.scenarioList")}</h3>
-        <button
-          class="icon-button compact-icon"
-          type="button"
-          title={$t("front.newScenario")}
-          onclick={openCreateScenarioModal}
-        >
-          <FilePlus2 size={16} aria-hidden="true" />
-        </button>
+        <div class="header-actions">
+          <button
+            class="icon-button compact-icon"
+            type="button"
+            title={$t("front.importZip")}
+            disabled={importingZip}
+            onclick={triggerImportZip}
+          >
+            <ArchiveRestore size={16} aria-hidden="true" />
+          </button>
+          <button
+            class="icon-button compact-icon"
+            type="button"
+            title={$t("front.newScenario")}
+            onclick={openCreateScenarioModal}
+          >
+            <FilePlus2 size={16} aria-hidden="true" />
+          </button>
+        </div>
       </div>
       {#if scenarios.length}
+        <input
+          class="filter-input compact-input"
+          type="search"
+          placeholder={$t("front.filterScenarios")}
+          bind:value={scenarioFilter}
+          aria-label={$t("front.filterScenarios")}
+        />
         <ul class="select-list">
-          {#each scenarios as scenario}
+          {#each filteredScenarios as scenario}
             <li>
               <button
                 class:selected={scenario.id === selectedScenarioId}
@@ -438,14 +525,25 @@
             <p class="eyebrow">{$t("front.selectedScenario")}</p>
             <h3 id="scenario-detail-heading">{activeScenario.name || activeScenario.id}</h3>
           </div>
-          <button
-            class="icon-button"
-            type="button"
-            title={$t("front.scenarioEdit")}
-            onclick={() => onNavigate.openScenarioEdit(selectedScenarioId)}
-          >
-            <FilePenLine size={18} aria-hidden="true" />
-          </button>
+          <div style="display:flex;gap:4px">
+            <button
+              class="icon-button"
+              type="button"
+              title={$t("editor.exportZip")}
+              disabled={exportingZip}
+              onclick={() => void doExportZip()}
+            >
+              <FileArchive size={18} aria-hidden="true" />
+            </button>
+            <button
+              class="icon-button"
+              type="button"
+              title={$t("front.scenarioEdit")}
+              onclick={() => onNavigate.openScenarioEdit(selectedScenarioId)}
+            >
+              <FilePenLine size={18} aria-hidden="true" />
+            </button>
+          </div>
         </div>
 
         <div class="meta-row">
