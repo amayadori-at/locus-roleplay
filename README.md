@@ -3,6 +3,8 @@
 **Obsidian-first roleplay session manager for OpenAI-compatible LLMs.**
 
 Obsidian Vault をデータの正本として、ブラウザからロールプレイセッションを管理するローカル Web アプリケーションです。
+Seesaa Wikiにて利用方法やサンプルシナリオを整備中です。
+https://locus-rp.playing.wiki
 
 ---
 
@@ -55,7 +57,7 @@ Node.js 不要、Python 3.11 以上のみ必要です。
 [Releases](https://github.com/amayadori-at/locus-roleplay/releases) から最新の `locus-rp-v*.zip` をダウンロードして展開します。
 
 ```
-locus-rp-v1.0.0/
+locus-rp-v1.2.0/
   app/
   frontend/
   server.sh       ← Linux / macOS
