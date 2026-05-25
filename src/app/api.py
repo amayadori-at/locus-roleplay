@@ -73,24 +73,34 @@ from app.state_session import (
     list_session_metadata,
     next_session_id,
     read_current_state,
+    read_session_candidate_state,
     read_latest_session_prompt,
     read_session_log,
     read_session_metadata,
     read_session_state,
     read_session_state_snapshot,
+    write_latest_session_prompt,
+    write_session_candidate_state,
     write_session_metadata,
+    write_session_state,
+    write_session_state_snapshot,
     update_session_log_entry,
     delete_session_log_entry,
     delete_session_log_from_turn,
 )
+from app.state_updater import run_state_update
 from app.turn_loop import (
     ChatCompletionClient,
     StreamingChatCompletionClient,
+    _prompt_rag_debug,
+    _prompt_rag_results,
+    _prompt_recent_log_selection,
     finalize_gm_turn,
     finalize_gm_turn_fast,
     prepare_gm_turn,
     run_gm_turn,
 )
+from app.turn_prompt_payload import latest_prompt_payload
 from app.turn_payloads import segment_payload, turn_result_payload
 from app.turn_jobs import find_active_turn_job, read_turn_job, start_turn_job
 from app.vault import FrontmatterError, Vault, VaultError, VaultFileError, parse_markdown
@@ -103,6 +113,15 @@ class ApiResponse:
     body: bytes
     last_modified: float | None = None
     headers: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class _RegenerateTargetContext:
+    target_entry: dict[str, Any]
+    user_message: str
+    recent_log: list[dict[str, Any]]
+    state_before_turn: dict[str, Any]
+    state_source: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -2180,12 +2199,35 @@ def _update_session_message_candidate_response(vault: Vault, scenario_id: str, s
     if index >= len(candidates):
         raise ApiBadRequest(f"Candidate index out of bounds (max {len(candidates) - 1})")
         
+    state_restored = False
+    state_restore_reason = ""
+    candidate_states = target_entry.get("candidate_states")
+    if isinstance(candidate_states, list) and index < len(candidate_states):
+        state_info = candidate_states[index]
+        if isinstance(state_info, dict) and state_info.get("state_updated") is True:
+            if _latest_assistant_turn(entries) == turn:
+                state = read_session_candidate_state(vault, scenario_id, session_id, turn, index)
+                write_session_state(vault, scenario_id, session_id, state)
+                write_session_state_snapshot(vault, scenario_id, session_id, turn, state)
+                state_restored = True
+            else:
+                state_restore_reason = "not_latest_turn"
+
     updates = {
         "active_candidate_index": index,
         "content": candidates[index]
     }
     updated = update_session_log_entry(vault, scenario_id, session_id, turn, "assistant", updates)
-    return {"scenario_id": scenario_id, "session_id": session_id, "turn": turn, "role": "assistant", "updated": True, "entry": updated}
+    return {
+        "scenario_id": scenario_id,
+        "session_id": session_id,
+        "turn": turn,
+        "role": "assistant",
+        "updated": True,
+        "entry": updated,
+        "state_restored": state_restored,
+        "state_restore_reason": state_restore_reason,
+    }
 
 
 def _delete_session_message_response(vault: Vault, scenario_id: str, session_id: str, turn: int, role: str, query: dict[str, list[str]]) -> dict[str, Any]:
@@ -2219,48 +2261,34 @@ def _regenerate_session_message_response(
         raise ApiBadRequest("stream must be a boolean")
 
     entries = read_session_log(vault, scenario_id, session_id)
-    target_entry = None
-    user_message = ""
-    for entry in entries:
-        if entry.get("turn") == turn and entry.get("role") == "user":
-            user_message = entry.get("content", "")
-        if entry.get("turn") == turn and entry.get("role") == "assistant":
-            target_entry = entry
-            break
-            
-    if not target_entry:
-        raise ApiBadRequest("Assistant message not found for the specified turn")
-        
-    from app.turn_loop import prepare_gm_turn
-    recent_log_override = []
-    for entry in entries:
-        if isinstance(entry.get("turn"), int) and entry["turn"] > turn:
-            continue
-        if entry.get("turn") == turn and entry.get("role") != "user":
-            continue
-        recent_log_override.append(entry)
+    target = _regenerate_target_context(vault, scenario_id, session_id, turn, entries)
 
     prepared = prepare_gm_turn(
         vault,
         scenario_id=scenario_id,
         session_id=session_id,
-        user_message=user_message,
+        user_message=target.user_message,
         recent_limit=12,
-        recent_log_override=recent_log_override
+        recent_log_override=target.recent_log,
+        state_override=target.state_before_turn,
     )
+    _write_regenerate_latest_prompt(vault, scenario_id, session_id, turn, prepared, target.state_source)
 
     def _on_success(content: str, token_usage: dict[str, int]) -> bytes:
-        candidates = list(target_entry.get("candidates", []))
-        if not candidates:
-            candidates.append(target_entry.get("content", ""))
-        candidates.append(content)
-        active_index = len(candidates) - 1
-        updates = {
-            "content": content,
-            "candidates": candidates,
-            "active_candidate_index": active_index
-        }
-        updated = update_session_log_entry(vault, scenario_id, session_id, turn, "assistant", updates)
+        updated, state_info, state_restored = _append_regenerated_candidate(
+            vault,
+            scenario_id=scenario_id,
+            session_id=session_id,
+            turn=turn,
+            target_entry=target.target_entry,
+            entries=entries,
+            metadata=prepared.metadata,
+            base_state=target.state_before_turn,
+            recent_log=prepared.recent_log,
+            user_message=target.user_message,
+            assistant_content=content,
+            state_model_client=state_model_client,
+        )
         
         return json.dumps(
             {
@@ -2270,6 +2298,9 @@ def _regenerate_session_message_response(
                 "role": "assistant",
                 "entry": updated,
                 "token_usage": token_usage,
+                "state_source": target.state_source,
+                "state_candidate": state_info,
+                "state_restored": state_restored,
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -2297,6 +2328,243 @@ def _regenerate_session_message_response(
             content_type="application/json; charset=utf-8",
             body=_on_success(result.content, getattr(result, "token_usage", {})),
         )
+
+
+def _state_before_turn(vault: Vault, scenario_id: str, session_id: str, turn: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    previous_turn = max(0, turn - 1)
+    try:
+        return read_session_state_snapshot(vault, scenario_id, session_id, previous_turn), {
+            "source": "snapshot",
+            "turn": previous_turn,
+        }
+    except VaultError:
+        return read_session_state(vault, scenario_id, session_id), {
+            "source": "current_state_fallback",
+            "turn": previous_turn,
+        }
+
+
+def _regenerate_target_context(
+    vault: Vault,
+    scenario_id: str,
+    session_id: str,
+    turn: int,
+    entries: list[dict[str, Any]],
+) -> _RegenerateTargetContext:
+    target_entry = None
+    user_message = ""
+    for entry in entries:
+        if entry.get("turn") == turn and entry.get("role") == "user":
+            user_message = entry.get("content", "")
+        if entry.get("turn") == turn and entry.get("role") == "assistant":
+            target_entry = entry
+            break
+    if not target_entry:
+        raise ApiBadRequest("Assistant message not found for the specified turn")
+    state_before_turn, state_source = _state_before_turn(vault, scenario_id, session_id, turn)
+    return _RegenerateTargetContext(
+        target_entry=target_entry,
+        user_message=user_message,
+        recent_log=_pre_turn_recent_log(entries, turn),
+        state_before_turn=state_before_turn,
+        state_source=state_source,
+    )
+
+
+def _pre_turn_recent_log(entries: list[dict[str, Any]], turn: int) -> list[dict[str, Any]]:
+    recent_log: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry.get("turn"), int):
+            continue
+        if entry["turn"] >= turn:
+            continue
+        recent_log.append(entry)
+    return recent_log
+
+
+def _write_regenerate_latest_prompt(
+    vault: Vault,
+    scenario_id: str,
+    session_id: str,
+    turn: int,
+    prepared: Any,
+    state_source: dict[str, Any],
+) -> None:
+    write_latest_session_prompt(
+        vault,
+        scenario_id,
+        session_id,
+        latest_prompt_payload(
+            scenario_id=scenario_id,
+            session_id=session_id,
+            turn=turn,
+            profile=prepared.profile,
+            messages=prepared.messages,
+            rag_results=_prompt_rag_results(prepared.prompt),
+            rag_debug=_prompt_rag_debug(prepared.prompt),
+            recent_log_selection=_prompt_recent_log_selection(prepared.prompt),
+        )
+        | {"state_source": state_source},
+    )
+
+
+def _append_regenerated_candidate(
+    vault: Vault,
+    *,
+    scenario_id: str,
+    session_id: str,
+    turn: int,
+    target_entry: dict[str, Any],
+    entries: list[dict[str, Any]],
+    metadata: dict[str, Any],
+    base_state: dict[str, Any],
+    recent_log: list[dict[str, Any]],
+    user_message: str,
+    assistant_content: str,
+    state_model_client: ChatCompletionClient | None,
+) -> tuple[dict[str, Any], dict[str, Any], bool]:
+    candidates = list(target_entry.get("candidates", []))
+    if not candidates:
+        candidates.append(target_entry.get("content", ""))
+    candidate_states = _candidate_states_for_existing_candidates(
+        vault,
+        scenario_id=scenario_id,
+        session_id=session_id,
+        turn=turn,
+        target_entry=target_entry,
+        candidate_count=len(candidates),
+    )
+    candidates.append(assistant_content)
+    active_index = len(candidates) - 1
+    state_info = _state_info_for_regenerated_candidate(
+        vault,
+        scenario_id=scenario_id,
+        session_id=session_id,
+        turn=turn,
+        candidate_index=active_index,
+        metadata=metadata,
+        base_state=base_state,
+        recent_log=recent_log,
+        user_message=user_message,
+        assistant_content=assistant_content,
+        state_model_client=state_model_client,
+    )
+    candidate_states.append(state_info)
+    state_restored = _restore_candidate_state_if_latest(
+        vault,
+        scenario_id=scenario_id,
+        session_id=session_id,
+        turn=turn,
+        candidate_index=active_index,
+        entries=entries,
+        state_info=state_info,
+    )
+    updated = update_session_log_entry(
+        vault,
+        scenario_id,
+        session_id,
+        turn,
+        "assistant",
+        {
+            "content": assistant_content,
+            "candidates": candidates,
+            "active_candidate_index": active_index,
+            "candidate_states": candidate_states,
+        },
+    )
+    return updated, state_info, state_restored
+
+
+def _candidate_states_for_existing_candidates(
+    vault: Vault,
+    *,
+    scenario_id: str,
+    session_id: str,
+    turn: int,
+    target_entry: dict[str, Any],
+    candidate_count: int,
+) -> list[dict[str, Any]]:
+    existing = target_entry.get("candidate_states")
+    if isinstance(existing, list):
+        states = [item if isinstance(item, dict) else {"state_updated": False} for item in existing[:candidate_count]]
+    else:
+        states = []
+    if not states and candidate_count > 0:
+        state, source = _state_after_turn(vault, scenario_id, session_id, turn)
+        path = write_session_candidate_state(vault, scenario_id, session_id, turn, 0, state)
+        states.append({"state_updated": True, "state_path": path, "source": source})
+    while len(states) < candidate_count:
+        states.append({"state_updated": False})
+    return states
+
+
+def _state_after_turn(vault: Vault, scenario_id: str, session_id: str, turn: int) -> tuple[dict[str, Any], str]:
+    try:
+        return read_session_state_snapshot(vault, scenario_id, session_id, turn), "snapshot"
+    except VaultError:
+        return read_session_state(vault, scenario_id, session_id), "current_state_fallback"
+
+
+def _state_info_for_regenerated_candidate(
+    vault: Vault,
+    *,
+    scenario_id: str,
+    session_id: str,
+    turn: int,
+    candidate_index: int,
+    metadata: dict[str, Any],
+    base_state: dict[str, Any],
+    recent_log: list[dict[str, Any]],
+    user_message: str,
+    assistant_content: str,
+    state_model_client: ChatCompletionClient | None,
+) -> dict[str, Any]:
+    summary_profile_id = metadata.get("summary_profile_id")
+    if state_model_client is None or not isinstance(summary_profile_id, str) or not summary_profile_id.strip():
+        return {"state_updated": False, "state_update_error": None}
+    try:
+        result = run_state_update(
+            vault,
+            scenario_id=scenario_id,
+            session_id=session_id,
+            turn=turn,
+            profile_id=summary_profile_id,
+            user_message=user_message,
+            gm_response=assistant_content,
+            model_client=state_model_client,
+            recent_context=recent_log,
+            current_state_override=base_state,
+            persist=False,
+        )
+        path = write_session_candidate_state(vault, scenario_id, session_id, turn, candidate_index, result.updated_state)
+        return {"state_updated": True, "state_path": path, "state_update_error": None}
+    except Exception as exc:
+        return {"state_updated": False, "state_update_error": f"{type(exc).__name__}: {exc}"}
+
+
+def _restore_candidate_state_if_latest(
+    vault: Vault,
+    *,
+    scenario_id: str,
+    session_id: str,
+    turn: int,
+    candidate_index: int,
+    entries: list[dict[str, Any]],
+    state_info: dict[str, Any],
+) -> bool:
+    if state_info.get("state_updated") is not True:
+        return False
+    if _latest_assistant_turn(entries) != turn:
+        return False
+    state = read_session_candidate_state(vault, scenario_id, session_id, turn, candidate_index)
+    write_session_state(vault, scenario_id, session_id, state)
+    write_session_state_snapshot(vault, scenario_id, session_id, turn, state)
+    return True
+
+
+def _latest_assistant_turn(entries: list[dict[str, Any]]) -> int | None:
+    turns = [entry.get("turn") for entry in entries if entry.get("role") == "assistant" and isinstance(entry.get("turn"), int)]
+    return max(turns) if turns else None
 
 
 def _continue_session_message_response(

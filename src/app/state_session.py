@@ -102,6 +102,43 @@ def write_session_state(vault: Vault, scenario_id: str, session_id: str, state: 
     _write_json_file(vault, _session_state_path(scenario_id, session_id), state)
 
 
+def read_session_candidate_state(
+    vault: Vault,
+    scenario_id: str,
+    session_id: str,
+    turn: int,
+    candidate_index: int,
+) -> dict[str, Any]:
+    _validate_turn(turn)
+    _validate_candidate_index(candidate_index)
+    state = vault.load_json(_session_candidate_state_path(scenario_id, session_id, turn, candidate_index))
+    if not isinstance(state, dict):
+        raise StateSessionError(
+            "Session candidate state must be a JSON object: "
+            f"{_session_candidate_state_path(scenario_id, session_id, turn, candidate_index)}"
+        )
+    return state
+
+
+def write_session_candidate_state(
+    vault: Vault,
+    scenario_id: str,
+    session_id: str,
+    turn: int,
+    candidate_index: int,
+    state: dict[str, Any],
+) -> str:
+    _validate_id(scenario_id, "scenario")
+    _validate_id(session_id, "session")
+    _validate_turn(turn)
+    _validate_candidate_index(candidate_index)
+    if not isinstance(state, dict):
+        raise StateSessionError("Session candidate state must be a JSON object")
+    path = _session_candidate_state_path(scenario_id, session_id, turn, candidate_index)
+    _write_json_file(vault, path, state)
+    return _session_candidate_state_session_relative_path(turn, candidate_index)
+
+
 def initialize_session_state(
     vault: Vault,
     scenario_id: str,
@@ -578,6 +615,17 @@ def _session_state_snapshot_path(scenario_id: str, session_id: str, turn: int) -
     return f"rp/scenarios/{scenario_id}/sessions/{session_id}/state/snapshots/turn_{turn:04d}.json"
 
 
+def _session_candidate_state_path(scenario_id: str, session_id: str, turn: int, candidate_index: int) -> str:
+    return (
+        f"rp/scenarios/{scenario_id}/sessions/{session_id}/"
+        f"{_session_candidate_state_session_relative_path(turn, candidate_index)}"
+    )
+
+
+def _session_candidate_state_session_relative_path(turn: int, candidate_index: int) -> str:
+    return f"state/candidates/turn_{turn:04d}_candidate_{candidate_index:04d}.json"
+
+
 def _session_metadata_path(scenario_id: str, session_id: str) -> str:
     return f"rp/scenarios/{scenario_id}/sessions/{session_id}/metadata.json"
 
@@ -602,6 +650,11 @@ def _validate_id(value: str, kind: str) -> None:
 def _validate_turn(turn: int) -> None:
     if not isinstance(turn, int) or turn < 0:
         raise StateSessionError("turn must be a non-negative integer")
+
+
+def _validate_candidate_index(candidate_index: int) -> None:
+    if not isinstance(candidate_index, int) or candidate_index < 0:
+        raise StateSessionError("candidate index must be a non-negative integer")
 
 
 def _now_iso() -> str:

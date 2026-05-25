@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from app.ids import is_locus_id
+from app.rag_chunks import chunk_rag_document
+from app.rag_types import RagDocument, document_key
 from app.vault import Vault, VaultFileError
 
 
@@ -16,15 +17,6 @@ class RagDocumentError(Exception):
 KEYWORD_TRIGGER_LIMIT = 4
 KEYWORD_TRIGGER_MESSAGE_LIMIT = 8
 DEFAULT_KEYWORD_TRIGGER_TOKEN_BUDGET = 1200
-
-
-@dataclass(frozen=True)
-class RagDocument:
-    source_path: str
-    type: str
-    title: str
-    body: str
-    metadata: dict[str, Any]
 
 
 def list_available_mods(vault: Vault, scenario_id: str) -> list[dict[str, Any]]:
@@ -261,13 +253,14 @@ def documents_under(vault: Vault, base: Path, folder: str, *, recursive: bool) -
         metadata = dict(document.frontmatter)
         if metadata.get("rag") is False:
             continue
-        documents.append(
-            RagDocument(
+        documents.extend(
+            chunk_rag_document(
                 source_path=scenario_relative,
-                type=document_type(folder, metadata),
+                doc_type=document_type(folder, metadata),
                 title=document_title(path, metadata),
-                body=document.body.strip(),
+                body=document.body,
                 metadata=metadata,
+                chunkable=folder in {"memory", "lore"},
             )
         )
     return documents

@@ -41,6 +41,7 @@ def build_prompt_preview(
     scene_note: str | None = None,
     recent_limit: int = 12,
     recent_log_override: list[dict[str, Any]] | None = None,
+    state_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return compose_prompt_graph(
         vault,
@@ -54,6 +55,7 @@ def build_prompt_preview(
         scene_note=scene_note,
         recent_limit=recent_limit,
         recent_log_override=recent_log_override,
+        state_override=state_override,
     )
 
 
@@ -70,6 +72,7 @@ def compose_prompt_graph(
     scene_note: str | None = None,
     recent_limit: int = 12,
     recent_log_override: list[dict[str, Any]] | None = None,
+    state_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not isinstance(user_message, str) or not user_message.strip():
         raise PromptPreviewError("user_message must be a non-empty string")
@@ -93,7 +96,10 @@ def compose_prompt_graph(
     scenario = load_scenario(vault, scenario_id)
     persona = load_persona(vault, persona_id)
     profile = load_profile(vault, profile_id)
-    state = read_session_state(vault, scenario_id, session_id) if session_id else read_current_state(vault, scenario_id)
+    if state_override is not None:
+        state = state_override
+    else:
+        state = read_session_state(vault, scenario_id, session_id) if session_id else read_current_state(vault, scenario_id)
     if recent_log_override is not None:
         raw_recent_log = recent_log_override
     else:
