@@ -5,6 +5,7 @@ from typing import Any, Protocol
 
 from app.loaders import ModelProfile
 from app.memory_summarizer import run_memory_summary, should_update_memory
+from app.reasoning import sanitize_log_entries
 from app.state_updater import run_state_update
 from app.state_session import read_session_metadata, write_session_metadata
 from app.vault import Vault
@@ -32,6 +33,7 @@ def run_turn_postprocess(
 ) -> dict[str, Any]:
     state_updated = False
     state_update_error: str | None = None
+    sanitized_recent_log = sanitize_log_entries(recent_log)
     summary_profile_id = metadata.get("summary_profile_id")
     if state_model_client is not None and isinstance(summary_profile_id, str) and summary_profile_id.strip():
         try:
@@ -44,7 +46,7 @@ def run_turn_postprocess(
                 user_message=user_message,
                 gm_response=assistant_content,
                 model_client=state_model_client,
-                recent_context=recent_log,
+                recent_context=sanitized_recent_log,
             )
             state_updated = True
         except Exception as exc:

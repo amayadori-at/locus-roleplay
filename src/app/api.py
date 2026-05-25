@@ -100,6 +100,8 @@ from app.turn_loop import (
     prepare_gm_turn,
     run_gm_turn,
 )
+from app.reasoning import remove_reasoning_blocks as _remove_reasoning_blocks
+from app.reasoning import strip_reasoning_blocks as _strip_reasoning_blocks
 from app.turn_prompt_payload import latest_prompt_payload
 from app.turn_payloads import segment_payload, turn_result_payload
 from app.turn_jobs import find_active_turn_job, read_turn_job, start_turn_job
@@ -2147,17 +2149,17 @@ def _update_session_message_response(vault: Vault, scenario_id: str, session_id:
     content = payload.get("content")
     if not isinstance(content, str):
         raise ApiBadRequest("content must be a string")
-    
+
     entries = read_session_log(vault, scenario_id, session_id)
     target_entry = None
     for entry in entries:
         if entry.get("turn") == turn and entry.get("role") == role:
             target_entry = entry
             break
-            
+
     if not target_entry:
         raise ApiBadRequest("Message not found")
-        
+
     updates = {}
     if "candidates" in target_entry and role == "assistant":
         candidates = list(target_entry["candidates"])
@@ -2170,7 +2172,7 @@ def _update_session_message_response(vault: Vault, scenario_id: str, session_id:
         updates["candidates"] = candidates
         updates["active_candidate_index"] = active
     updates["content"] = content
-        
+
     updated = update_session_log_entry(vault, scenario_id, session_id, turn, role, updates)
     return {"scenario_id": scenario_id, "session_id": session_id, "turn": turn, "role": role, "updated": True, "entry": updated}
 
@@ -2179,26 +2181,30 @@ def _update_session_message_candidate_response(vault: Vault, scenario_id: str, s
     index = payload.get("index", payload.get("candidate_index"))
     if not isinstance(index, int) or index < 0:
         raise ApiBadRequest("index must be a non-negative integer")
-        
+
     entries = read_session_log(vault, scenario_id, session_id)
     target_entry = None
     for entry in entries:
         if entry.get("turn") == turn and entry.get("role") == "assistant":
             target_entry = entry
             break
-            
+
     if not target_entry:
         raise ApiBadRequest("Assistant message not found")
-        
-    candidates = target_entry.get("candidates", [])
+
+    raw_candidates = target_entry.get("candidates", [])
+    candidates = [
+        _strip_reasoning_blocks(candidate) if isinstance(candidate, str) else ""
+        for candidate in (raw_candidates if isinstance(raw_candidates, list) else [])
+    ]
     if not candidates:
         if index == 0:
             return {"scenario_id": scenario_id, "session_id": session_id, "turn": turn, "role": "assistant", "updated": False, "entry": target_entry}
         raise ApiBadRequest("No candidates available")
-        
+
     if index >= len(candidates):
         raise ApiBadRequest(f"Candidate index out of bounds (max {len(candidates) - 1})")
-        
+
     state_restored = False
     state_restore_reason = ""
     candidate_states = target_entry.get("candidate_states")
@@ -2206,16 +2212,24 @@ def _update_session_message_candidate_response(vault: Vault, scenario_id: str, s
         state_info = candidate_states[index]
         if isinstance(state_info, dict) and state_info.get("state_updated") is True:
             if _latest_assistant_turn(entries) == turn:
-                state = read_session_candidate_state(vault, scenario_id, session_id, turn, index)
-                write_session_state(vault, scenario_id, session_id, state)
-                write_session_state_snapshot(vault, scenario_id, session_id, turn, state)
-                state_restored = True
+                try:
+                    state = read_session_candidate_state(vault, scenario_id, session_id, turn, index)
+                    write_session_state(vault, scenario_id, session_id, state)
+                    write_session_state_snapshot(vault, scenario_id, session_id, turn, state)
+                    state_restored = True
+                except Exception as exc:
+                    state_restore_reason = f"candidate_state_unavailable:{type(exc).__name__}"
             else:
                 state_restore_reason = "not_latest_turn"
+        else:
+            state_restore_reason = "candidate_state_unavailable"
+    else:
+        state_restore_reason = "candidate_state_unavailable"
 
     updates = {
         "active_candidate_index": index,
-        "content": candidates[index]
+        "content": candidates[index],
+        "candidates": candidates,
     }
     updated = update_session_log_entry(vault, scenario_id, session_id, turn, "assistant", updates)
     return {
@@ -2236,10 +2250,10 @@ def _delete_session_message_response(vault: Vault, scenario_id: str, session_id:
         deleted = delete_session_log_from_turn(vault, scenario_id, session_id, turn)
     else:
         deleted = delete_session_log_entry(vault, scenario_id, session_id, turn, role)
-        
+
     if not deleted:
         raise ApiBadRequest("Message not found or nothing deleted")
-        
+
     return {"scenario_id": scenario_id, "session_id": session_id, "turn": turn, "role": role, "deleted": True, "rewind": rewind}
 
 
@@ -2255,6 +2269,7 @@ def _regenerate_session_message_response(
 ) -> ApiResponse | ApiStreamResponse:
     if model_client is None:
         model_client = OpenAICompatibleClient()
+    state_client = state_model_client if state_model_client is not None else model_client
 
     stream = payload.get("stream", False)
     if not isinstance(stream, bool):
@@ -2287,9 +2302,9 @@ def _regenerate_session_message_response(
             recent_log=prepared.recent_log,
             user_message=target.user_message,
             assistant_content=content,
-            state_model_client=state_model_client,
+            state_model_client=state_client,
         )
-        
+
         return json.dumps(
             {
                 "scenario_id": scenario_id,
@@ -2423,9 +2438,15 @@ def _append_regenerated_candidate(
     assistant_content: str,
     state_model_client: ChatCompletionClient | None,
 ) -> tuple[dict[str, Any], dict[str, Any], bool]:
-    candidates = list(target_entry.get("candidates", []))
+    assistant_content = _strip_reasoning_blocks(assistant_content)
+    raw_candidates = target_entry.get("candidates", [])
+    candidates = [
+        _strip_reasoning_blocks(candidate) if isinstance(candidate, str) else ""
+        for candidate in (raw_candidates if isinstance(raw_candidates, list) else [])
+    ]
     if not candidates:
-        candidates.append(target_entry.get("content", ""))
+        original_content = target_entry.get("content", "")
+        candidates.append(_strip_reasoning_blocks(original_content) if isinstance(original_content, str) else "")
     candidate_states = _candidate_states_for_existing_candidates(
         vault,
         scenario_id=scenario_id,
@@ -2624,7 +2645,8 @@ def _continue_session_message_response(
     )
 
     def _on_success(appended_content: str, token_usage: dict[str, int]) -> bytes:
-        new_content = base_content + appended_content
+        clean_appended_content = _remove_reasoning_blocks(appended_content)
+        new_content = _remove_reasoning_blocks(base_content) + clean_appended_content
         updates: dict[str, Any] = {
             "content": new_content,
             "segments": [
@@ -2649,7 +2671,7 @@ def _continue_session_message_response(
                 "session_id": session_id,
                 "turn": turn,
                 "role": "assistant",
-                "appended_content": appended_content,
+                "appended_content": clean_appended_content,
                 "entry": updated,
                 "token_usage": token_usage,
             },

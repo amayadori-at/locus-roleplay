@@ -16,6 +16,7 @@ from app.rag import (
     load_scenario_file,
     retrieve_context,
 )
+from app.reasoning import sanitize_log_entries
 from app.state_session import read_current_state, read_session_log, read_session_metadata, read_session_state
 from app.token_usage import estimate_prompt_token_usage
 from app.vault import Vault, VaultError
@@ -101,9 +102,9 @@ def compose_prompt_graph(
     else:
         state = read_session_state(vault, scenario_id, session_id) if session_id else read_current_state(vault, scenario_id)
     if recent_log_override is not None:
-        raw_recent_log = recent_log_override
+        raw_recent_log = sanitize_log_entries(recent_log_override)
     else:
-        raw_recent_log = read_session_log(vault, scenario_id, session_id) if session_id else []
+        raw_recent_log = sanitize_log_entries(read_session_log(vault, scenario_id, session_id) if session_id else [])
     graph = read_prompt_graph(vault, scenario_id)
 
     active_mods: list[str] = _safe_string_list(metadata.get("active_mods"))
@@ -417,6 +418,7 @@ def _expand_node(
             limit=limit,
             sources=sources,
             exclude_paths=(exclude_paths | keyword_paths) if exclude_paths or keyword_paths else None,
+            character_match_mode=_character_rag_match_mode(scenario.metadata),
         )
         keyword_budgeted_results = budget_rag_results(
             keyword_results,
@@ -600,6 +602,16 @@ def _node_token_budgets(node: dict[str, Any]) -> dict[str, int]:
         if isinstance(key, str) and isinstance(budget, int) and not isinstance(budget, bool) and budget >= 0:
             budgets[key] = budget
     return budgets
+
+
+def _character_rag_match_mode(metadata: dict[str, Any]) -> str:
+    config = metadata.get("character_rag")
+    if isinstance(config, dict):
+        value = config.get("match")
+        if isinstance(value, str) and value.strip().lower() == "fuzzy":
+            return "fuzzy"
+        return "exact"
+    return "exact"
 
 
 def _section(title: str, content: str) -> str:

@@ -113,6 +113,7 @@ def parse_markdown(raw: str) -> MarkdownDocument:
 def parse_frontmatter(raw: str) -> dict[str, Any]:
     data: dict[str, Any] = {}
     current_list_key: str | None = None
+    current_object_key: str | None = None
 
     for line_number, raw_line in enumerate(raw.splitlines(), start=1):
         line = raw_line.rstrip()
@@ -127,7 +128,39 @@ def parse_frontmatter(raw: str) -> dict[str, Any]:
             data[current_list_key].append(value)
             continue
 
+        if line.startswith("  "):
+            parent_key = current_object_key or current_list_key
+            if parent_key is None:
+                raise FrontmatterError(f"Unsupported indentation at frontmatter line {line_number}")
+            parent_value = data.get(parent_key)
+            if isinstance(parent_value, list):
+                if parent_value:
+                    raise FrontmatterError(f"Unsupported indentation at frontmatter line {line_number}")
+                data[parent_key] = {}
+                parent_value = data[parent_key]
+            if not isinstance(parent_value, dict):
+                raise FrontmatterError(f"Unsupported indentation at frontmatter line {line_number}")
+            if ":" not in stripped:
+                raise FrontmatterError(f"Missing ':' at frontmatter line {line_number}")
+            nested_key, nested_value_raw = stripped.split(":", 1)
+            nested_key = nested_key.strip()
+            if not nested_key:
+                raise FrontmatterError(f"Empty key at frontmatter line {line_number}")
+            if nested_key in parent_value:
+                raise FrontmatterError(f"Duplicate key '{nested_key}' at frontmatter line {line_number}")
+            current_list_key = None
+            current_object_key = parent_key
+            nested_value_raw = nested_value_raw.strip()
+            if nested_value_raw == "":
+                raise FrontmatterError(f"Unsupported empty nested value at frontmatter line {line_number}")
+            parent_value[nested_key] = _parse_scalar(nested_value_raw, line_number)
+            continue
+
+        if current_object_key is not None and line.startswith((" ", "\t")):
+            raise FrontmatterError(f"Unsupported indentation at frontmatter line {line_number}")
+
         current_list_key = None
+        current_object_key = None
         if line.startswith((" ", "\t")):
             raise FrontmatterError(f"Unsupported indentation at frontmatter line {line_number}")
         if ":" not in line:
@@ -144,6 +177,7 @@ def parse_frontmatter(raw: str) -> dict[str, Any]:
         if value_raw == "":
             data[key] = []
             current_list_key = key
+            current_object_key = key
         else:
             data[key] = _parse_scalar(value_raw, line_number)
 
