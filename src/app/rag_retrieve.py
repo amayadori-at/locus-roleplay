@@ -33,6 +33,7 @@ def retrieve_context(
     sources: list[str] | tuple[str, ...] | None = None,
     embedding_config: EmbeddingConfig | None = None,
     exclude_paths: set[str] | None = None,
+    character_match_mode: str = "exact",
 ) -> list[dict[str, Any]]:
     """Retrieve relevant documents using keyword search, optionally blended with vector search."""
     if not is_locus_id(scenario_id):
@@ -43,6 +44,7 @@ def retrieve_context(
         return []
 
     terms = query_terms(query)
+    exact_query = query if isinstance(query, str) else ""
     allowed_sources = set(sources or ["memory", "lore", "characters"])
     documents = _fresh_index_documents(vault, scenario_id, sources=allowed_sources)
     if documents is None:
@@ -57,11 +59,20 @@ def retrieve_context(
     vector_sims = try_vector_similarities(vault, scenario_id, query, documents, embedding_config)
 
     if vector_sims is not None:
-        scored = score_documents_hybrid(documents, terms, vector_sims)
+        scored = score_documents_hybrid(
+            documents,
+            terms,
+            vector_sims,
+            character_match_mode=character_match_mode,
+            exact_query=exact_query,
+        )
     else:
         if not terms:
             return []
-        scored = [_score_document(document, terms) for document in documents]
+        scored = [
+            _score_document(document, terms, character_match_mode=character_match_mode, exact_query=exact_query)
+            for document in documents
+        ]
 
     results = [result for result in scored if result["score"] > 0]
     results.sort(key=lambda item: (-item["score"], item["source_path"], str(item.get("chunk_id") or "")))
@@ -75,8 +86,10 @@ def query_terms(query: str) -> list[str]:
     for match in re.findall(r"[A-Za-z0-9_]{2,}|[ぁ-んァ-ヶ一-龠ー]{2,}", query.lower()):
         raw_terms.append(match)
         if re.fullmatch(r"[ぁ-んァ-ヶ一-龠ー]+", match):
-            raw_terms.extend(part for part in re.split(r"[のをにへでとがはもやか、。・]+", match) if len(part) >= 2)
-            raw_terms.extend(_japanese_ngrams(match))
+            units = _japanese_term_units(match)
+            raw_terms.extend(units)
+            for unit in units:
+                raw_terms.extend(_japanese_ngrams(unit))
     seen: set[str] = set()
     terms: list[str] = []
     for term in raw_terms:
@@ -127,17 +140,28 @@ def score_documents_hybrid(
     documents: list[RagDocument],
     terms: list[str],
     vector_sims: dict[str, float],
+    *,
+    character_match_mode: str = "exact",
+    exact_query: str = "",
 ) -> list[dict[str, Any]]:
     """Score documents using both keyword matching and vector similarity."""
     results: list[dict[str, Any]] = []
     for document in documents:
-        keyword_result = _score_document(document, terms)
+        keyword_result = _score_document(
+            document,
+            terms,
+            character_match_mode=character_match_mode,
+            exact_query=exact_query,
+        )
         keyword_score = keyword_result["score"]
         v_sim = vector_sims.get(document_key(document), 0.0)
+        is_exact_character = _is_character_document(document) and character_match_mode != "fuzzy"
 
         if keyword_score > 0:
             boost = max(0.0, v_sim) * keyword_score * 0.4
             combined = keyword_score + boost
+        elif is_exact_character:
+            combined = 0.0
         elif v_sim >= VECTOR_MATCH_THRESHOLD:
             combined = (v_sim - VECTOR_MATCH_THRESHOLD) / (1.0 - VECTOR_MATCH_THRESHOLD) * VECTOR_ONLY_MAX_SCORE
             keyword_result = {**keyword_result, "content": _excerpt(document.body, []), "matched_terms": []}
@@ -158,10 +182,55 @@ def _list_documents(vault: Vault, scenario_id: str, *, sources: set[str]) -> lis
 def _japanese_ngrams(value: str) -> list[str]:
     terms: list[str] = []
     upper = min(6, len(value))
-    for size in range(2, upper + 1):
+    for size in range(3, upper + 1):
         for index in range(0, len(value) - size + 1):
             terms.append(value[index : index + size])
     return terms
+
+
+def _japanese_term_units(value: str) -> list[str]:
+    units: list[str] = []
+    for term in _japanese_script_terms(value):
+        parts = [part for part in re.split(r"[のをにへでとがはもやか、。・]+", term) if len(part) >= 2]
+        if parts and parts != [term]:
+            units.extend(parts)
+        else:
+            units.append(term)
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for unit in units:
+        if unit not in seen:
+            seen.add(unit)
+            deduped.append(unit)
+    return deduped
+
+
+def _japanese_script_terms(value: str) -> list[str]:
+    terms: list[str] = []
+    current = ""
+    current_kind = ""
+    for char in value:
+        kind = _japanese_script_kind(char)
+        if kind and kind == current_kind:
+            current += char
+            continue
+        if len(current) >= 2:
+            terms.append(current)
+        current = char if kind else ""
+        current_kind = kind
+    if len(current) >= 2:
+        terms.append(current)
+    return terms
+
+
+def _japanese_script_kind(char: str) -> str:
+    if re.fullmatch(r"[ぁ-ん]", char):
+        return "hiragana"
+    if re.fullmatch(r"[ァ-ヶー]", char):
+        return "katakana"
+    if re.fullmatch(r"[一-龠]", char):
+        return "kanji"
+    return ""
 
 
 def _fresh_index_documents(vault: Vault, scenario_id: str, *, sources: set[str]) -> list[RagDocument] | None:
@@ -211,9 +280,19 @@ def _source_folder(source_path: str) -> str | None:
     return None
 
 
-def _score_document(document: RagDocument, terms: list[str]) -> dict[str, Any]:
-    searchable = _searchable_text(document).lower()
-    matched_terms = [term for term in terms if term in searchable]
+def _score_document(
+    document: RagDocument,
+    terms: list[str],
+    *,
+    character_match_mode: str = "exact",
+    exact_query: str = "",
+) -> dict[str, Any]:
+    is_character = _is_character_document(document)
+    if is_character and character_match_mode != "fuzzy":
+        matched_terms = _character_exact_matched_terms(document, terms, exact_query)
+    else:
+        searchable = _searchable_text(document).lower()
+        matched_terms = [term for term in terms if term in searchable]
     if not matched_terms:
         return {
             "source_path": document.source_path,
@@ -231,7 +310,7 @@ def _score_document(document: RagDocument, terms: list[str]) -> dict[str, Any]:
     priority = document.metadata.get("priority")
     if isinstance(priority, (int, float)) and not isinstance(priority, bool):
         score += priority
-    content = document.body.strip() if result_budget_type({"type": document.type, "source_path": document.source_path}) == "character" else _excerpt(document.body, matched_terms)
+    content = document.body.strip() if is_character else _excerpt(document.body, matched_terms)
     return {
         "source_path": document.source_path,
         "chunk_id": document.chunk_id,
@@ -245,11 +324,70 @@ def _score_document(document: RagDocument, terms: list[str]) -> dict[str, Any]:
     }
 
 
+def _is_character_document(document: RagDocument) -> bool:
+    return result_budget_type({"type": document.type, "source_path": document.source_path}) == "character"
+
+
 def _searchable_text(document: RagDocument) -> str:
     metadata_text = json.dumps(document.metadata, ensure_ascii=False, sort_keys=True)
     if result_budget_type({"type": document.type, "source_path": document.source_path}) == "character":
         return "\n".join(part for part in (document.title, metadata_text) if part)
     return "\n".join(part for part in (document.body, document.title, metadata_text) if part)
+
+
+def _character_exact_matched_terms(document: RagDocument, terms: list[str], query: str) -> list[str]:
+    raw_values = _character_exact_raw_values(document)
+    values = _character_exact_values(raw_values)
+    matched = [term for term in terms if term in values]
+    normalized_query = _normalize_exact_value(query)
+    for value in raw_values:
+        if not _should_match_normalized_phrase(value):
+            continue
+        normalized = _normalize_exact_value(value)
+        if normalized and normalized in normalized_query and normalized not in matched:
+            matched.append(normalized)
+    return matched
+
+
+def _character_exact_raw_values(document: RagDocument) -> list[str]:
+    values: list[str] = []
+    for value in (
+        document.title,
+        document.metadata.get("id"),
+        document.metadata.get("name"),
+    ):
+        if isinstance(value, str) and value.strip():
+            values.append(value)
+    for field in ("aliases", "keywords"):
+        raw = document.metadata.get(field)
+        items = raw if isinstance(raw, list) else [raw]
+        for item in items:
+            if isinstance(item, str) and item.strip():
+                values.append(item)
+    return values
+
+
+def _character_exact_values(raw_values: list[str]) -> set[str]:
+    values: set[str] = set()
+    for value in raw_values:
+        _add_character_exact_value(values, value)
+    return values
+
+
+def _should_match_normalized_phrase(value: str) -> bool:
+    return bool(re.search(r"[\s・･'’`\\-]", value.strip()))
+
+
+def _add_character_exact_value(values: set[str], value: str) -> None:
+    stripped = value.strip().lower()
+    values.add(stripped)
+    normalized = _normalize_exact_value(stripped)
+    if normalized:
+        values.add(normalized)
+
+
+def _normalize_exact_value(value: str) -> str:
+    return re.sub(r"[\s・･'’`\\-]+", "", value.strip().lower())
 
 
 def _metadata_match_score(metadata: dict[str, Any], matched_terms: list[str]) -> int:

@@ -65,6 +65,7 @@ def retrieve_context(
     sources: list[str] | tuple[str, ...] | None = None,
     embedding_config: EmbeddingConfig | None = None,
     exclude_paths: set[str] | None = None,
+    character_match_mode: str = "exact",
 ) -> list[dict[str, Any]]:
     try:
         _rag_retrieve.embed_texts = embed_texts
@@ -76,6 +77,7 @@ def retrieve_context(
             sources=sources,
             embedding_config=embedding_config,
             exclude_paths=exclude_paths,
+            character_match_mode=character_match_mode,
         )
     except RagRetrieveError as exc:
         raise RagError(str(exc)) from exc
@@ -243,5 +245,7 @@ def _score_documents_hybrid(
     documents: list[RagDocument],
     terms: list[str],
     vector_sims: dict[str, float],
+    *,
+    character_match_mode: str = "exact",
 ) -> list[dict[str, Any]]:
-    return _retrieve_score_documents_hybrid(documents, terms, vector_sims)
+    return _retrieve_score_documents_hybrid(documents, terms, vector_sims, character_match_mode=character_match_mode)

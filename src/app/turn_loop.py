@@ -10,6 +10,8 @@ from app.images import Segment, parse_image_markers
 from app.messages import is_conversation_role
 from app.model_client import ChatCompletionResult
 from app.prompt_preview import compose_prompt_graph
+from app.reasoning import remove_reasoning_blocks as _remove_reasoning_blocks
+from app.reasoning import sanitize_log_entries, strip_reasoning_blocks as _strip_reasoning_blocks
 from app.state_session import (
     append_session_log,
     read_session_log,
@@ -183,9 +185,9 @@ def prepare_gm_turn(
     scenario = load_scenario(vault, scenario_id)
     profile = load_profile(vault, rp_profile_id)
     if recent_log_override is not None:
-        raw_recent_log = recent_log_override
+        raw_recent_log = sanitize_log_entries(recent_log_override)
     else:
-        raw_recent_log = read_session_log(vault, scenario_id, session_id)
+        raw_recent_log = sanitize_log_entries(read_session_log(vault, scenario_id, session_id))
     prompt = compose_prompt_graph(
         vault,
         scenario_id=scenario_id,
@@ -235,9 +237,10 @@ def finalize_gm_turn(
         ),
     )
     segments = parse_image_markers(assistant_content, scenario=prepared.scenario, vault=vault)
+    postprocess_content = _strip_reasoning_blocks(assistant_content)
 
     append_session_log(vault, scenario_id, session_id, turn=prepared.turn, role="user", content=user_message)
-    append_session_log(vault, scenario_id, session_id, turn=prepared.turn, role="assistant", content=assistant_content)
+    append_session_log(vault, scenario_id, session_id, turn=prepared.turn, role="assistant", content=postprocess_content)
 
     postprocess = run_turn_postprocess(
         vault,
@@ -248,7 +251,7 @@ def finalize_gm_turn(
         scenario_metadata=prepared.scenario.metadata,
         recent_log=prepared.recent_log,
         user_message=user_message,
-        assistant_content=assistant_content,
+        assistant_content=postprocess_content,
         state_model_client=state_model_client,
     )
 
@@ -298,8 +301,9 @@ def finalize_gm_turn_fast(
         ),
     )
     segments = parse_image_markers(assistant_content, scenario=prepared.scenario, vault=vault)
+    log_content = _strip_reasoning_blocks(assistant_content)
     append_session_log(vault, scenario_id, session_id, turn=prepared.turn, role="user", content=user_message)
-    append_session_log(vault, scenario_id, session_id, turn=prepared.turn, role="assistant", content=assistant_content)
+    append_session_log(vault, scenario_id, session_id, turn=prepared.turn, role="assistant", content=log_content)
     updated_metadata = dict(prepared.metadata)
     updated_metadata["turn_count"] = prepared.turn
     updated_metadata["updated_at"] = _now_iso()
@@ -330,6 +334,7 @@ def run_gm_post_turn(
     state_model_client: ChatCompletionClient | None,
 ) -> dict[str, Any]:
     """Slow post-processing: state update and memory summary (LLM calls)."""
+    postprocess_content = _strip_reasoning_blocks(assistant_content)
     return run_turn_postprocess(
         vault,
         scenario_id=scenario_id,
@@ -339,7 +344,7 @@ def run_gm_post_turn(
         scenario_metadata=prepared.scenario.metadata,
         recent_log=prepared.recent_log,
         user_message=user_message,
-        assistant_content=assistant_content,
+        assistant_content=postprocess_content,
         state_model_client=state_model_client,
     )
 

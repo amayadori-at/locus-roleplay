@@ -9,6 +9,7 @@ from typing import Any, Protocol
 from app.ids import is_locus_id
 from app.loaders import ModelProfile, load_profile, load_scenario
 from app.model_client import ChatCompletionResult
+from app.reasoning import sanitize_log_entries
 from app.state_session import read_session_log, read_session_state
 from app.vault import Vault, VaultError, VaultPathError
 
@@ -76,7 +77,7 @@ def run_memory_summary(
     profile = load_profile(vault, profile_id)
     interval = memory_update_interval_turns(scenario.metadata)
     start_turn = max(1, turn - interval + 1)
-    recent_turns = _turn_entries(read_session_log(vault, scenario_id, session_id), start_turn, turn)
+    recent_turns = _turn_entries(sanitize_log_entries(read_session_log(vault, scenario_id, session_id)), start_turn, turn)
     if not recent_turns:
         raise MemorySummaryError("No session log entries are available for memory summarization")
 
