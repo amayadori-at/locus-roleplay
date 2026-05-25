@@ -6,9 +6,10 @@ from typing import Any
 
 from app.embedding import EmbeddingConfig, EmbeddingError, cosine_similarity, embed_texts, get_embedding_config
 from app.ids import is_locus_id
-from app.rag_documents import RagDocument, RagDocumentError, list_rag_documents
+from app.rag_documents import RagDocumentError, list_rag_documents
 from app.rag_format import result_budget_type
-from app.rag_index import RAG_INDEX_VERSION, rag_index_rebuild_needed, read_rag_index
+from app.rag_index import RAG_INDEX_VERSION, index_item_to_document, rag_index_rebuild_needed, read_rag_index
+from app.rag_types import RagDocument, document_key, document_key_from_parts
 from app.rag_vectors import VECTOR_INDEX_VERSION, embedding_text, read_vector_index
 from app.vault import Vault, VaultError
 
@@ -63,7 +64,7 @@ def retrieve_context(
         scored = [_score_document(document, terms) for document in documents]
 
     results = [result for result in scored if result["score"] > 0]
-    results.sort(key=lambda item: (-item["score"], item["source_path"]))
+    results.sort(key=lambda item: (-item["score"], item["source_path"], str(item.get("chunk_id") or "")))
     return results[:limit]
 
 
@@ -92,7 +93,7 @@ def try_vector_similarities(
     documents: list[RagDocument],
     config: EmbeddingConfig | None,
 ) -> dict[str, float] | None:
-    """Return {source_path: cosine_similarity} mapping, or None if embedding is unavailable/failed."""
+    """Return {document_key: cosine_similarity} mapping, or None if embedding is unavailable/failed."""
     if config is None:
         config = get_embedding_config()
     if not config.enabled or not documents:
@@ -106,11 +107,12 @@ def try_vector_similarities(
     for item in index.get("documents", []):
         if isinstance(item, dict):
             sp = item.get("source_path")
+            chunk_id = item.get("chunk_id")
             emb = item.get("embedding")
             if isinstance(sp, str) and isinstance(emb, list):
-                indexed_vecs[sp] = emb
+                indexed_vecs[document_key_from_parts(sp, chunk_id if isinstance(chunk_id, str) else None)] = emb
 
-    if not all(doc.source_path in indexed_vecs for doc in documents):
+    if not all(document_key(doc) in indexed_vecs for doc in documents):
         return None
 
     try:
@@ -118,7 +120,7 @@ def try_vector_similarities(
     except EmbeddingError:
         return None
 
-    return {doc.source_path: cosine_similarity(query_emb, indexed_vecs[doc.source_path]) for doc in documents}
+    return {document_key(doc): cosine_similarity(query_emb, indexed_vecs[document_key(doc)]) for doc in documents}
 
 
 def score_documents_hybrid(
@@ -131,7 +133,7 @@ def score_documents_hybrid(
     for document in documents:
         keyword_result = _score_document(document, terms)
         keyword_score = keyword_result["score"]
-        v_sim = vector_sims.get(document.source_path, 0.0)
+        v_sim = vector_sims.get(document_key(document), 0.0)
 
         if keyword_score > 0:
             boost = max(0.0, v_sim) * keyword_score * 0.4
@@ -190,28 +192,11 @@ def _fresh_index_documents(vault: Vault, scenario_id: str, *, sources: set[str])
             return None
         if source_folder not in sources:
             continue
-        document = _index_item_to_document(item, source_folder=source_folder)
+        document = index_item_to_document(item, source_folder=source_folder)
         if document is None:
             return None
         documents.append(document)
     return documents
-
-
-def _index_item_to_document(item: dict[str, Any], *, source_folder: str) -> RagDocument | None:
-    source_path = item.get("source_path")
-    body = item.get("body")
-    if not isinstance(source_path, str) or not isinstance(body, str):
-        return None
-    document_type = item.get("type")
-    title = item.get("title")
-    metadata = item.get("metadata")
-    return RagDocument(
-        source_path=source_path,
-        type=document_type if isinstance(document_type, str) and document_type else source_folder,
-        title=title if isinstance(title, str) and title else source_path,
-        body=body.strip(),
-        metadata=metadata if isinstance(metadata, dict) else {},
-    )
 
 
 def _source_folder(source_path: str) -> str | None:
@@ -227,12 +212,13 @@ def _source_folder(source_path: str) -> str | None:
 
 
 def _score_document(document: RagDocument, terms: list[str]) -> dict[str, Any]:
-    searchable_parts = [document.body, document.title, json.dumps(document.metadata, ensure_ascii=False, sort_keys=True)]
-    searchable = "\n".join(searchable_parts).lower()
+    searchable = _searchable_text(document).lower()
     matched_terms = [term for term in terms if term in searchable]
     if not matched_terms:
         return {
             "source_path": document.source_path,
+            "chunk_id": document.chunk_id,
+            "heading_path": document.heading_path or [],
             "type": document.type,
             "title": document.title,
             "score": 0,
@@ -248,6 +234,8 @@ def _score_document(document: RagDocument, terms: list[str]) -> dict[str, Any]:
     content = document.body.strip() if result_budget_type({"type": document.type, "source_path": document.source_path}) == "character" else _excerpt(document.body, matched_terms)
     return {
         "source_path": document.source_path,
+        "chunk_id": document.chunk_id,
+        "heading_path": document.heading_path or [],
         "type": document.type,
         "title": document.title,
         "score": score,
@@ -255,6 +243,13 @@ def _score_document(document: RagDocument, terms: list[str]) -> dict[str, Any]:
         "metadata": document.metadata,
         "matched_terms": matched_terms,
     }
+
+
+def _searchable_text(document: RagDocument) -> str:
+    metadata_text = json.dumps(document.metadata, ensure_ascii=False, sort_keys=True)
+    if result_budget_type({"type": document.type, "source_path": document.source_path}) == "character":
+        return "\n".join(part for part in (document.title, metadata_text) if part)
+    return "\n".join(part for part in (document.body, document.title, metadata_text) if part)
 
 
 def _metadata_match_score(metadata: dict[str, Any], matched_terms: list[str]) -> int:

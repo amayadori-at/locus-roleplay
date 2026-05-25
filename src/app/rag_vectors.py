@@ -6,7 +6,8 @@ from typing import Any
 
 from app.embedding import EmbeddingConfig, EmbeddingError, embed_texts, get_embedding_config
 from app.ids import is_locus_id
-from app.rag_documents import RagDocument, RagDocumentError, list_rag_documents
+from app.rag_documents import RagDocumentError, list_rag_documents
+from app.rag_types import RagDocument, document_key, document_key_from_parts
 from app.vault import Vault, VaultError
 
 
@@ -14,7 +15,7 @@ class RagVectorError(VaultError):
     pass
 
 
-VECTOR_INDEX_VERSION = 1
+VECTOR_INDEX_VERSION = 3
 
 
 def build_vector_index(
@@ -34,7 +35,7 @@ def build_vector_index(
 
     indexed: list[dict[str, Any]] = []
     for document, embedding in zip(documents, embeddings):
-        indexed.append({"source_path": document.source_path, "embedding": embedding})
+        indexed.append({"source_path": document.source_path, "chunk_id": document.chunk_id, "embedding": embedding})
 
     payload: dict[str, Any] = {
         "version": VECTOR_INDEX_VERSION,
@@ -88,9 +89,13 @@ def vector_index_rebuild_needed(
     indexed = index.get("documents")
     if not isinstance(indexed, list):
         return True
-    indexed_paths = {item.get("source_path") for item in indexed if isinstance(item, dict)}
-    current_paths = {doc.source_path for doc in _list_documents(vault, scenario_id)}
-    return indexed_paths != current_paths
+    indexed_keys = {
+        _vector_item_key(item)
+        for item in indexed
+        if isinstance(item, dict)
+    }
+    current_keys = {document_key(doc) for doc in _list_documents(vault, scenario_id)}
+    return indexed_keys != current_keys
 
 
 def vector_index_path(scenario_id: str) -> str:
@@ -109,8 +114,25 @@ def _list_documents(vault: Vault, scenario_id: str) -> list[RagDocument]:
 
 
 def _embedding_text(document: RagDocument) -> str:
-    parts = [document.title, document.body]
+    if _is_character_document(document):
+        parts = [document.title, json.dumps(document.metadata, ensure_ascii=False, sort_keys=True)]
+    else:
+        parts = [document.title, document.body]
     return "\n".join(part for part in parts if part).strip()[:4000]
+
+
+def _is_character_document(document: RagDocument) -> bool:
+    if document.source_path.startswith("characters/"):
+        return True
+    return str(document.type).strip().lower() in {"character", "characters"}
+
+
+def _vector_item_key(item: dict[str, Any]) -> str | None:
+    source_path = item.get("source_path")
+    if not isinstance(source_path, str):
+        return None
+    chunk_id = item.get("chunk_id")
+    return document_key_from_parts(source_path, chunk_id if isinstance(chunk_id, str) else None)
 
 
 def _vector_index_path(scenario_id: str) -> str:

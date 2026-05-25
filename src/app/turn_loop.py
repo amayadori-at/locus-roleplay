@@ -19,6 +19,7 @@ from app.state_session import (
 )
 from app.turn_postprocess import run_turn_postprocess
 from app.turn_prompt_payload import latest_prompt_payload
+from app.rag_types import document_key_from_parts
 from app.vault import Vault, VaultError
 
 
@@ -168,6 +169,7 @@ def prepare_gm_turn(
     user_message: str,
     recent_limit: int = 12,
     recent_log_override: list[dict[str, Any]] | None = None,
+    state_override: dict[str, Any] | None = None,
 ) -> TurnPreparation:
     if not isinstance(user_message, str) or not user_message.strip():
         raise TurnLoopError("user_message must be a non-empty string")
@@ -191,6 +193,7 @@ def prepare_gm_turn(
         user_message=user_message,
         recent_limit=recent_limit,
         recent_log_override=raw_recent_log,
+        state_override=state_override,
     )
     recent_log = prompt.get("selected_recent_log")
     if not isinstance(recent_log, list):
@@ -397,12 +400,18 @@ def _prompt_rag_results(prompt: dict[str, Any]) -> list[dict[str, Any]]:
             if not isinstance(result, dict):
                 continue
             source_path = result.get("source_path")
-            if not isinstance(source_path, str) or source_path in seen:
+            chunk_id = result.get("chunk_id")
+            if not isinstance(source_path, str):
                 continue
-            seen.add(source_path)
+            result_key = document_key_from_parts(source_path, chunk_id if isinstance(chunk_id, str) else None)
+            if result_key in seen:
+                continue
+            seen.add(result_key)
             results.append(
                 {
                     "source_path": source_path,
+                    "chunk_id": chunk_id if isinstance(chunk_id, str) and chunk_id else None,
+                    "heading_path": result.get("heading_path") if isinstance(result.get("heading_path"), list) else [],
                     "type": result.get("type"),
                     "title": result.get("title"),
                     "score": result.get("score"),
