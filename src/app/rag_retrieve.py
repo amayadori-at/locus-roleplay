@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import date, datetime
 from typing import Any
 
 from app.embedding import EmbeddingConfig, EmbeddingError, cosine_similarity, embed_texts, get_embedding_config
@@ -22,6 +23,25 @@ class RagRetrieveError(VaultError):
 VECTOR_MATCH_THRESHOLD = 0.55
 # Score assigned to a vector-only hit at threshold=1.0 (scales down toward threshold)
 VECTOR_ONLY_MAX_SCORE = 40
+JAPANESE_STOP_TERMS = frozenset(
+    {
+        # 代名詞・指示詞
+        "あなた", "これ", "それ", "あれ", "この", "その", "あの", "どの",
+        # 助動詞・活用語尾
+        "って", "ってい", "してい", "のは", "には", "では",
+        "された", "だった", "している", "していた",
+        "という", "といった", "ような",
+        # 丁寧語
+        "です", "ます", "します", "でした", "ました",
+        # 汎用動詞（原形）
+        "する", "ある", "いる", "なる",
+        # 汎用動詞（自然文頻出形）
+        "言う", "見る", "思う", "感じる",
+    }
+)
+
+_MEMORY_RECENCY_MAX_BONUS = 20
+_MEMORY_RECENCY_WINDOW_DAYS = 30
 
 
 def retrieve_context(
@@ -93,6 +113,8 @@ def query_terms(query: str) -> list[str]:
     seen: set[str] = set()
     terms: list[str] = []
     for term in raw_terms:
+        if _is_japanese_stop_term(term):
+            continue
         if term not in seen:
             seen.add(term)
             terms.append(term)
@@ -180,11 +202,15 @@ def _list_documents(vault: Vault, scenario_id: str, *, sources: set[str]) -> lis
 
 
 def _japanese_ngrams(value: str) -> list[str]:
+    if _is_hiragana_only(value):
+        return []
     terms: list[str] = []
     upper = min(6, len(value))
     for size in range(3, upper + 1):
         for index in range(0, len(value) - size + 1):
-            terms.append(value[index : index + size])
+            term = value[index : index + size]
+            if not _is_hiragana_only(term):
+                terms.append(term)
     return terms
 
 
@@ -196,6 +222,7 @@ def _japanese_term_units(value: str) -> list[str]:
             units.extend(parts)
         else:
             units.append(term)
+    units = [unit for unit in units if _is_japanese_unit_term(unit)]
     seen: set[str] = set()
     deduped: list[str] = []
     for unit in units:
@@ -233,6 +260,18 @@ def _japanese_script_kind(char: str) -> str:
     return ""
 
 
+def _is_japanese_unit_term(value: str) -> bool:
+    return not (_is_hiragana_only(value) and len(value) <= 4)
+
+
+def _is_hiragana_only(value: str) -> bool:
+    return bool(value) and re.fullmatch(r"[ぁ-ん]+", value) is not None
+
+
+def _is_japanese_stop_term(value: str) -> bool:
+    return value in JAPANESE_STOP_TERMS
+
+
 def _fresh_index_documents(vault: Vault, scenario_id: str, *, sources: set[str]) -> list[RagDocument] | None:
     try:
         index = read_rag_index(vault, scenario_id)
@@ -261,6 +300,8 @@ def _fresh_index_documents(vault: Vault, scenario_id: str, *, sources: set[str])
             return None
         if source_folder not in sources:
             continue
+        if item.get("metadata", {}).get("keywords_enabled") is True:
+            continue  # handled exclusively by keyword trigger pipeline
         document = index_item_to_document(item, source_folder=source_folder)
         if document is None:
             return None
@@ -293,7 +334,7 @@ def _score_document(
     else:
         searchable = _searchable_text(document).lower()
         matched_terms = [term for term in terms if term in searchable]
-    if not matched_terms:
+    if not matched_terms or (not is_character and not _has_significant_match(document, matched_terms)):
         return {
             "source_path": document.source_path,
             "chunk_id": document.chunk_id,
@@ -310,6 +351,9 @@ def _score_document(
     priority = document.metadata.get("priority")
     if isinstance(priority, (int, float)) and not isinstance(priority, bool):
         score += priority
+    source_folder = _source_folder(document.source_path)
+    if source_folder == "memory":
+        score += _memory_recency_score(document.metadata)
     content = document.body.strip() if is_character else _excerpt(document.body, matched_terms)
     return {
         "source_path": document.source_path,
@@ -397,7 +441,67 @@ def _metadata_match_score(metadata: dict[str, Any], matched_terms: list[str]) ->
         values = value if isinstance(value, list) else [value]
         haystack = " ".join(str(item).lower() for item in values if item is not None)
         score += sum(5 for term in matched_terms if term in haystack)
+    # keywords: アイテム単位の完全一致で +10（n-gram 部分一致による誤爆を防ぐ）
+    kw_value = metadata.get("keywords")
+    kw_values = kw_value if isinstance(kw_value, list) else [kw_value]
+    terms_set = set(matched_terms)
+    matched_kw_count = sum(
+        1 for kw in kw_values
+        if kw is not None and str(kw).strip().lower() in terms_set
+    )
+    score += matched_kw_count * 10
+    # locus-rag のキーワードにマッチした場合の追加ボーナス（作者の意図による検索シグナルを尊重）
+    if metadata.get("chunk_type") == "locus-rag" and matched_kw_count > 0:
+        score += 10
     return score
+
+
+def _memory_recency_score(metadata: dict[str, Any]) -> int:
+    raw = metadata.get("created")
+    if not raw:
+        return 0
+    try:
+        if isinstance(raw, str):
+            created_date = datetime.fromisoformat(raw).date()
+        elif isinstance(raw, datetime):
+            created_date = raw.date()
+        elif isinstance(raw, date):
+            created_date = raw
+        else:
+            return 0
+    except (ValueError, TypeError):
+        return 0
+    age_days = (date.today() - created_date).days
+    if age_days < 0:
+        return 0
+    return max(0, _MEMORY_RECENCY_MAX_BONUS - age_days)
+
+
+def _has_significant_match(document: RagDocument, matched_terms: list[str]) -> bool:
+    return any(
+        _is_significant_term(term)
+        or _term_matches_title(document.title, term)
+        or _term_matches_metadata(document.metadata, term)
+        for term in matched_terms
+    )
+
+
+def _is_significant_term(term: str) -> bool:
+    return re.search(r"[A-Za-z0-9_ァ-ヶ一-龠]", term) is not None
+
+
+def _term_matches_title(title: str, term: str) -> bool:
+    return bool(title and term and term in title.lower())
+
+
+def _term_matches_metadata(metadata: dict[str, Any], term: str) -> bool:
+    for field in ("keywords", "tags", "characters", "locations", "topics"):
+        value = metadata.get(field)
+        values = value if isinstance(value, list) else [value]
+        haystack = " ".join(str(item).lower() for item in values if item is not None)
+        if term in haystack:
+            return True
+    return False
 
 
 def _excerpt(body: str, matched_terms: list[str], limit: int = 900) -> str:

@@ -445,6 +445,8 @@ def _prompt_rag_debug(prompt: dict[str, Any]) -> list[dict[str, Any]]:
                 "retrieved_count": expansion.get("retrieved_count", 0),
                 "included_count": expansion.get("included_count", len(expansion.get("results", []))),
                 "token_budget": expansion.get("token_budget"),
+                "keyword_token_budget": expansion.get("keyword_token_budget"),
+                "token_budgets": expansion.get("token_budgets") if isinstance(expansion.get("token_budgets"), dict) else {},
             }
         )
     return debug

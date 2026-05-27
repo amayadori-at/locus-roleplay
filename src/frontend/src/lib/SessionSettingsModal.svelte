@@ -61,6 +61,12 @@
     return promptPreview?.prompt?.rag_debug || [];
   }
 
+  /** @param {Record<string, any>} budgets */
+  function budgetSummary(budgets) {
+    if (!budgets || typeof budgets !== "object") return "";
+    return Object.entries(budgets).map(([key, value]) => `${key}: ${value}`).join(", ");
+  }
+
   function memoryCounts() {
     return ragStatus?.memory?.counts || {};
   }
@@ -280,6 +286,7 @@
           {#each ragDebug() as debug}
             <div><dt>Query</dt><dd>{debug.query || $t("common.unrecorded")}</dd></div>
             <div><dt>Sources</dt><dd>{debug.sources?.join(", ") || $t("common.unrecorded")}</dd></div>
+            <div><dt>Budget</dt><dd>total {debug.token_budget ?? $t("common.unrecorded")} / keyword {debug.keyword_token_budget ?? $t("common.unrecorded")} / {budgetSummary(debug.token_budgets)}</dd></div>
             <div><dt>Retrieved</dt><dd>{debug.retrieved_count ?? 0} / included {debug.included_count ?? 0}</dd></div>
             <div><dt>Skipped</dt><dd>{debug.skipped_reason || $t("common.none")}</dd></div>
           {/each}
@@ -310,6 +317,7 @@
           {#each ragDebug() as debug}
             <div><dt>Query</dt><dd>{debug.query || $t("common.unrecorded")}</dd></div>
             <div><dt>Sources</dt><dd>{debug.sources?.join(", ") || $t("common.unrecorded")}</dd></div>
+            <div><dt>Budget</dt><dd>total {debug.token_budget ?? $t("common.unrecorded")} / keyword {debug.keyword_token_budget ?? $t("common.unrecorded")} / {budgetSummary(debug.token_budgets)}</dd></div>
             <div><dt>Retrieved</dt><dd>{debug.retrieved_count ?? 0} / included {debug.included_count ?? 0}</dd></div>
             <div><dt>Skipped</dt><dd>{debug.skipped_reason || $t("common.none")}</dd></div>
           {/each}

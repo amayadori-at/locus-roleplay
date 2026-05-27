@@ -1,5 +1,5 @@
 <script>
-  import { ArrowLeft, ArrowDown, ArrowUp, Copy, FilePenLine, FilePlus2, GitBranch, ListTree, Minimize2, Plus, RotateCcw, Save, Trash2, X } from "lucide-svelte";
+  import { ArrowLeft, ArrowDown, ArrowUp, Copy, Database, FilePenLine, FilePlus2, GitBranch, ListTree, Minimize2, Network, Plus, RotateCcw, Save, Trash2, X } from "lucide-svelte";
   import { Background, BackgroundVariant, Controls, SvelteFlow } from "@xyflow/svelte";
   import "@xyflow/svelte/dist/style.css";
   import { onMount } from "svelte";
@@ -30,6 +30,33 @@
     updateStartPromptGraph
   } from "../lib/api.js";
   import { t, translateNow } from "../lib/i18n.js";
+  import {
+    RAG_SOURCE_OPTIONS,
+    RAG_TYPE_BUDGET_KEYS,
+    buildPromptFlowEdges,
+    buildPromptFlowNodes,
+    budgetEnabled,
+    deletePromptNodeFromGraph,
+    defaultRoleForType,
+    duplicatePromptNodeInGraph,
+    graphWithNormalizedOrder,
+    movePromptNode,
+    nodeTypeBadge,
+    nodeTypeCssClass,
+    normalizeNodeForType,
+    normalizedRagSources,
+    parseOptionalNumber,
+    promptNodeOrderSnapshot,
+    promptOrderDuplicateWarnings,
+    renamePromptNodeInGraph,
+    reorderPromptNodeByDrop,
+    setBudgetEnabled,
+    setOptionalNumberField,
+    setRagSource,
+    setRagTypeBudget,
+    sortPromptNodes
+  } from "../lib/promptGraphEditor.js";
+  import PromptNodeList from "../lib/PromptNodeList.svelte";
   import PromptPreviewPanel from "../lib/PromptPreviewPanel.svelte";
   import SourceEditorPanel from "../lib/SourceEditorPanel.svelte";
 
@@ -64,8 +91,8 @@
   let promptGraphMessage = "";
   let promptPreviewError = "";
   let activeTab = "markdown";
-  /** @type {"table" | "visual"} */
-  let promptView = "table";
+  /** @type {"panels" | "visual"} */
+  let promptView = "panels";
   /** @type {Record<string, any> | null} */
   let promptGraph = null;
   let promptGraphSource = "";
@@ -83,11 +110,36 @@
   let previewProfileId = "";
   let previewUserMessage = translateNow("editor.previewUserInput");
   let selectedVisualNodeId = "";
+  /** @type {Array<Record<string, any>>} */
+  let promptNodeList = [];
+  /** @type {Array<any>} */
+  let visualFlowNodes = [];
+  /** @type {Array<any>} */
+  let visualFlowEdges = [];
+  /** @type {Record<string, any> | null} */
+  let selectedPromptNode = null;
+  let selectedPromptNodeIndex = -1;
   /** @type {Array<string>} */
   let promptGraphWarnings = [];
+  /** @type {Array<string>} */
+  let promptGraphLocalWarnings = [];
+  /** @type {Array<string>} */
+  let visiblePromptGraphWarnings = [];
   const promptRoles = ["system", "user", "assistant", "messages"];
-  const promptNodeTypes = ["file", "selected_persona", "state", "rag", "session_log", "user_note", "scene_note", "current_user_message", "condition", "output"];
-
+  const promptNodeTypes = [
+    "file",
+    "selected_persona",
+    "state",
+    "rag",
+    "active_mods",
+    "pinned_characters",
+    "session_log",
+    "user_note",
+    "scene_note",
+    "current_user_message",
+    "condition",
+    "output"
+  ];
   let createFileModalOpen = false;
   let sourceEditorExpanded = false;
   let isMobile = false;
@@ -99,6 +151,9 @@
   let newNodePath = "";
   let newNodeRequired = false;
   let newNodeError = "";
+  let draggedNodeId = "";
+  let dragTargetNodeId = "";
+  let dragDropAfter = false;
 
   /** @type {Array<Record<string, any>>} */
   let starts = [];
@@ -160,6 +215,14 @@
   let memoryError = "";
   let deletingMemoryId = "";
   let memoryMessage = "";
+
+  $: promptNodeList = sortPromptNodes(/** @type {Array<Record<string, any>>} */ (promptGraph?.nodes || []));
+  $: selectedPromptNodeIndex = promptNodeList.findIndex((node) => node.id === selectedVisualNodeId);
+  $: selectedPromptNode = selectedPromptNodeIndex >= 0 ? promptNodeList[selectedPromptNodeIndex] : null;
+  $: visualFlowNodes = buildPromptFlowNodes(promptNodeList);
+  $: visualFlowEdges = buildPromptFlowEdges(promptNodeList, /** @type {Array<Record<string, any>>} */ (promptGraph?.edges || []), selectedVisualNodeId);
+  $: promptGraphLocalWarnings = promptOrderDuplicateWarnings(promptNodeList);
+  $: visiblePromptGraphWarnings = [...promptGraphWarnings, ...promptGraphLocalWarnings];
   onMount(async () => {
     const mq = window.matchMedia("(max-width: 860px)");
     isMobile = mq.matches;
@@ -183,7 +246,7 @@
       if (selectedPath) {
         await loadFile(selectedPath);
       }
-      await Promise.all([loadPromptGraph(), loadPreviewChoices(), loadScenarioSettings()]);
+      await Promise.all([loadPreviewChoices(), loadPromptWorkspace()]);
     } catch (caught) {
       error = caught instanceof Error ? caught.message : translateNow("editor.loadFilesError");
     } finally {
@@ -269,7 +332,24 @@
         sourceDirty = false;
         sourceMessage = translateNow("editor.deleteSuccess", { path: pathToDelete });
       }
-      await loadPromptGraph();
+      if (isStart) {
+        await loadStarts();
+        if (scenarioSettings.prompt_graph_mode === "per_start") {
+          const nextStartId = starts.find((start) => start.id === selectedStartTabId)?.id || starts[0]?.id || "";
+          selectedStartTabId = nextStartId;
+          if (nextStartId) {
+            await loadStartPromptGraph(nextStartId);
+          } else {
+            promptGraph = null;
+            activeStartId = "";
+            selectedVisualNodeId = "";
+          }
+        } else {
+          await loadPromptGraph();
+        }
+      } else {
+        await loadPromptGraph();
+      }
     } catch (caught) {
       error = caught instanceof Error ? caught.message : translateNow("editor.deleteError");
     } finally {
@@ -338,6 +418,8 @@
     error = "";
     sourceMessage = "";
     try {
+      const createdKind = newSourceKind;
+      const createdId = newSourceId.trim();
       const path = newSourcePath();
       const payload = await createScenarioSourceFile(route.scenarioId, path, newSourceTemplate());
       const filesPayload = await listScenarioSourceFiles(route.scenarioId);
@@ -349,6 +431,13 @@
       await loadFile(payload.path || path);
       activeTab = "markdown";
       sourceMessage = translateNow("editor.fileCreated");
+      if (createdKind === "startings") {
+        await loadStarts();
+        if (scenarioSettings.prompt_graph_mode === "per_start") {
+          selectedStartTabId = createdId;
+          await loadStartPromptGraph(createdId);
+        }
+      }
     } catch (caught) {
       newSourceError = caught instanceof Error ? caught.message : translateNow("editor.createFileError");
     } finally {
@@ -369,7 +458,9 @@
       promptGraphWarnings = payload.warnings || [];
       promptGraphDirty = false;
       promptGraphMessage = "";
-      selectedVisualNodeId = promptGraph?.nodes?.[0]?.id || "";
+      activeStartId = "";
+      currentGraphOwnFlag = true;
+      selectedVisualNodeId = sortPromptNodes(/** @type {Array<Record<string, any>>} */ (promptGraph?.nodes || []))[0]?.id || "";
     } catch (caught) {
       promptGraphError = caught instanceof Error ? caught.message : translateNow("editor.loadGraphError");
       promptGraph = null;
@@ -378,6 +469,26 @@
       selectedVisualNodeId = "";
     } finally {
       loadingPromptGraph = false;
+    }
+  }
+
+  async function loadPromptWorkspace() {
+    const settings = await loadScenarioSettings();
+    if (settings.prompt_graph_mode !== "per_start") {
+      selectedStartTabId = "";
+      await loadPromptGraph();
+      return;
+    }
+
+    await loadStarts();
+    const startId = selectedStartTabId || starts[0]?.id || "";
+    selectedStartTabId = startId;
+    if (startId) {
+      await loadStartPromptGraph(startId);
+    } else {
+      promptGraph = null;
+      activeStartId = "";
+      selectedVisualNodeId = "";
     }
   }
 
@@ -408,7 +519,7 @@
 
   /** @returns {Array<Record<string, any>>} */
   function promptNodes() {
-    return promptGraph?.nodes || [];
+    return promptNodeList;
   }
 
   function markPromptGraphDirty() {
@@ -423,10 +534,34 @@
    */
   function updateNodeField(index, field, value) {
     if (!promptGraph) return;
-    const nodes = [...(promptGraph.nodes || [])];
-    nodes[index] = { ...nodes[index], [field]: value };
-    promptGraph = { ...promptGraph, nodes };
+    const nodes = [...promptNodeList];
+    const current = nodes[index] || {};
+    if (value === undefined) {
+      const next = { ...current };
+      delete next[field];
+      nodes[index] = next;
+    } else {
+      nodes[index] = { ...current, [field]: value };
+    }
+    promptGraph = { ...promptGraph, nodes: field === "order" ? sortPromptNodes(nodes) : nodes };
     markPromptGraphDirty();
+  }
+
+  /**
+   * @param {number} index
+   * @param {string} value
+   */
+  function updateNodeOrder(index, value) {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      updateNodeField(index, "order", undefined);
+      return;
+    }
+    const order = Number(trimmed);
+    if (!Number.isFinite(order)) {
+      return;
+    }
+    updateNodeField(index, "order", order);
   }
 
   /**
@@ -435,9 +570,9 @@
    */
   function updateNode(index, nextNode) {
     if (!promptGraph) return;
-    const nodes = [...(promptGraph.nodes || [])];
+    const nodes = [...promptNodeList];
     nodes[index] = nextNode;
-    promptGraph = { ...promptGraph, nodes };
+    promptGraph = { ...promptGraph, nodes: sortPromptNodes(nodes) };
     markPromptGraphDirty();
   }
 
@@ -447,11 +582,8 @@
    */
   function moveNode(index, direction) {
     if (!promptGraph) return;
-    const nodes = [...(promptGraph.nodes || [])];
-    const nextIndex = direction === "up" ? index - 1 : index + 1;
-    if (nextIndex < 0 || nextIndex >= nodes.length) return;
-    [nodes[index], nodes[nextIndex]] = [nodes[nextIndex], nodes[index]];
-    const reordered = nodes.map((node, nodeIndex) => ({ ...node, order: (nodeIndex + 1) * 10 }));
+    const reordered = movePromptNode(promptNodeList, index, direction);
+    if (!reordered) return;
     promptGraph = { ...promptGraph, nodes: reordered };
     markPromptGraphDirty();
   }
@@ -461,10 +593,7 @@
    * @returns {number | undefined}
    */
   function optionalNumber(value) {
-    const trimmed = value.trim();
-    if (!trimmed) return undefined;
-    const parsed = Number(trimmed);
-    return Number.isFinite(parsed) ? parsed : undefined;
+    return parseOptionalNumber(value);
   }
 
   async function savePromptGraph() {
@@ -473,7 +602,8 @@
     promptGraphError = "";
     promptGraphMessage = "";
     try {
-      const payload = await updateScenarioPromptGraph(route.scenarioId, promptGraph);
+      const normalizedGraph = graphWithNormalizedOrder(promptGraph);
+      const payload = await updateScenarioPromptGraph(route.scenarioId, normalizedGraph);
       promptGraph = payload.graph || null;
       promptGraphSource = payload.source || "vault";
       promptGraphWarnings = payload.warnings || [];
@@ -538,6 +668,7 @@
         session_id: previewSessionId,
         persona_id: previewSessionId ? "" : previewPersonaId,
         profile_id: previewSessionId ? "" : previewProfileId,
+        starting_id: !previewSessionId && scenarioSettings.prompt_graph_mode === "per_start" ? activeStartId : "",
         user_message: previewUserMessage
       });
     } catch (caught) {
@@ -560,43 +691,21 @@
     return node.condition ? JSON.stringify(node.condition) : "";
   }
 
-  function visualNodes() {
-    const nodes = promptNodes().map((node, index) => ({
-      id: node.id,
-      type: index === 0 ? "input" : "default",
-      data: {
-        label: `${node.order} ${node.id}\n${node.type} / ${node.role}`
-      },
-      position: { x: index * 220, y: node.condition ? 110 : 40 },
-      class: `prompt-flow-node prompt-flow-${node.type}${node.required ? " required" : ""}`
-    }));
-    if (nodes.length) {
-      nodes.push({
-        id: "final_prompt",
-        type: "output",
-        data: { label: "⬛ final prompt" },
-        position: { x: nodes.length * 220, y: 40 },
-        class: "prompt-flow-node prompt-flow-final"
-      });
-    }
-    return nodes;
+  /**
+   * @param {Record<string, any>} node
+   * @param {string} key
+   */
+  function ragTypeBudgetValue(node, key) {
+    const value = node?.token_budgets?.[key];
+    return typeof value === "number" && Number.isFinite(value) ? value : "";
   }
 
-  function visualEdges() {
-    const ids = promptNodes().map((node) => node.id);
-    if (ids.length) {
-      ids.push("final_prompt");
-    }
-    return ids.slice(0, -1).map((source, index) => ({
-      id: `${source}-${ids[index + 1]}`,
-      source,
-      target: ids[index + 1],
-      animated: source === selectedVisualNodeId
-    }));
-  }
-
-  function selectedVisualNode() {
-    return promptNodes().find((node) => node.id === selectedVisualNodeId) || null;
+  /**
+   * @param {Record<string, any>} node
+   * @param {string} source
+   */
+  function ragSourceChecked(node, source) {
+    return normalizedRagSources(node).includes(source);
   }
 
   /** @param {string} nodeId */
@@ -604,45 +713,170 @@
     selectedVisualNodeId = nodeId === "final_prompt" ? "" : nodeId;
   }
 
-  function selectedVisualNodeIndex() {
-    const node = selectedVisualNode();
-    if (!node) return -1;
-    return promptNodes().findIndex((item) => item.id === node.id);
+  /** @param {string} nodeId */
+  function selectPromptNodeFromList(nodeId) {
+    addingNode = false;
+    selectVisualNode(nodeId);
+  }
+
+  function openAddPromptNodeForm() {
+    selectVisualNode("");
+    addingNode = true;
+    newNodeError = "";
+  }
+
+  function clearNodeDragState() {
+    document.removeEventListener("pointermove", updateNodeDragFromPointer);
+    document.removeEventListener("pointerup", finishNodePointerDrag);
+    document.removeEventListener("pointercancel", clearNodeDragState);
+    console.log("[PromptGraphDrag] clear", { draggedNodeId, dragTargetNodeId, dragDropAfter });
+    draggedNodeId = "";
+    dragTargetNodeId = "";
+    dragDropAfter = false;
+  }
+
+  /**
+   * @param {string} nodeId
+   * @param {PointerEvent} event
+   */
+  function startNodeDrag(nodeId, event) {
+    event.preventDefault();
+    event.stopPropagation();
+    draggedNodeId = nodeId;
+    dragTargetNodeId = "";
+    dragDropAfter = false;
+    console.log("[PromptGraphDrag] start", {
+      nodeId,
+      order: promptNodes().map((node) => ({ id: node.id, order: node.order }))
+    });
+    document.addEventListener("pointermove", updateNodeDragFromPointer);
+    document.addEventListener("pointerup", finishNodePointerDrag);
+    document.addEventListener("pointercancel", clearNodeDragState);
+  }
+
+  /**
+   * @param {PointerEvent} event
+   */
+  function updateNodeDragFromPointer(event) {
+    if (!draggedNodeId) return;
+    event.preventDefault();
+    const element = document.elementFromPoint(event.clientX, event.clientY);
+    const target = element?.closest?.(".node-item");
+    if (!(target instanceof HTMLElement)) {
+      console.log("[PromptGraphDrag] move-no-target", {
+        source: draggedNodeId,
+        x: event.clientX,
+        y: event.clientY
+      });
+      dragTargetNodeId = "";
+      return;
+    }
+    const nodeId = target.dataset.nodeId || "";
+    if (!nodeId || nodeId === draggedNodeId) {
+      console.log("[PromptGraphDrag] move-skip", {
+        source: draggedNodeId,
+        target: nodeId || null
+      });
+      dragTargetNodeId = "";
+      return;
+    }
+    dragTargetNodeId = nodeId;
+    const rect = target.getBoundingClientRect();
+    const sourceIndex = promptNodes().findIndex((node) => node.id === draggedNodeId);
+    const targetIndex = promptNodes().findIndex((node) => node.id === nodeId);
+    const pointerAfter = event.clientY > rect.top + rect.height / 2;
+    dragDropAfter = sourceIndex < targetIndex ? true : sourceIndex > targetIndex ? false : pointerAfter;
+    console.log("[PromptGraphDrag] move-target", {
+      source: draggedNodeId,
+      target: nodeId,
+      insertAfter: dragDropAfter,
+      pointerAfter,
+      sourceIndex,
+      targetIndex,
+      pointerY: event.clientY,
+      targetTop: rect.top,
+      targetHeight: rect.height
+    });
+  }
+
+  function finishNodePointerDrag() {
+    const sourceNodeId = draggedNodeId;
+    const targetNodeId = dragTargetNodeId;
+    const insertAfter = dragDropAfter;
+    console.log("[PromptGraphDrag] finish", {
+      draggedNodeId: sourceNodeId,
+      dragTargetNodeId: targetNodeId,
+      dragDropAfter: insertAfter,
+      order: promptNodes().map((node) => ({ id: node.id, order: node.order }))
+    });
+    if (targetNodeId) {
+      reorderNodeByDrop(sourceNodeId, targetNodeId, insertAfter);
+    }
+    clearNodeDragState();
+  }
+
+  /**
+   * @param {string} sourceNodeId
+   * @param {string} targetNodeId
+   * @param {boolean} insertAfter
+   */
+  function reorderNodeByDrop(sourceNodeId, targetNodeId, insertAfter) {
+    if (!promptGraph || !sourceNodeId || !targetNodeId || sourceNodeId === targetNodeId) {
+      console.log("[PromptGraphDrag] reorder-skip-input", { sourceNodeId, targetNodeId, insertAfter, hasGraph: !!promptGraph });
+      return;
+    }
+    const before = promptNodeOrderSnapshot(promptNodeList);
+    const reordered = reorderPromptNodeByDrop(promptNodeList, sourceNodeId, targetNodeId, insertAfter);
+    if (!reordered) {
+      console.log("[PromptGraphDrag] reorder-noop", { sourceNodeId, targetNodeId, insertAfter, before });
+      return;
+    }
+    console.log("[PromptGraphDrag] reorder-apply", {
+      sourceNodeId,
+      targetNodeId,
+      insertAfter,
+      sourceIndex: reordered.sourceIndex,
+      targetIndex: reordered.targetIndex,
+      insertIndex: reordered.insertIndex,
+      before,
+      after: promptNodeOrderSnapshot(reordered.nodes)
+    });
+    promptGraph = { ...promptGraph, nodes: reordered.nodes };
+    selectedVisualNodeId = reordered.movedId;
+    addingNode = false;
+    markPromptGraphDirty();
   }
 
   /** @param {number} index */
   function deleteNode(index) {
     if (!promptGraph) return;
-    const nodes = [...(promptGraph.nodes || [])];
-    nodes.splice(index, 1);
-    promptGraph = { ...promptGraph, nodes };
+    const nextGraph = deletePromptNodeFromGraph(promptGraph, promptNodeList, index);
+    if (!nextGraph) return;
+    promptGraph = nextGraph;
     selectedVisualNodeId = "";
     markPromptGraphDirty();
   }
 
   /** @param {number} index */
+  function requestDeleteNode(index) {
+    const node = promptNodes()[index];
+    if (!node) return;
+    if (!window.confirm(translateNow("editor.deleteNodeConfirm", { id: node.id }))) return;
+    deleteNode(index);
+  }
+
+  /** @param {number} index */
   function duplicateNode(index) {
     if (!promptGraph) return;
-    const nodes = [...(promptGraph.nodes || [])];
-    const source = nodes[index];
-    const maxOrder = nodes.reduce((max, n) => Math.max(max, n.order ?? 0), 0);
-    let uniqueId = `${source.id}_copy`;
-    let suffix = 2;
-    while (nodes.some((n) => n.id === uniqueId)) {
-      uniqueId = `${source.id}_copy${suffix}`;
-      suffix++;
-    }
-    const duplicated = { ...source, id: uniqueId, order: maxOrder + 10 };
-    promptGraph = { ...promptGraph, nodes: [...nodes, duplicated] };
-    selectedVisualNodeId = uniqueId;
+    const duplicated = duplicatePromptNodeInGraph(promptGraph, promptNodeList, index);
+    if (!duplicated) return;
+    promptGraph = duplicated.graph;
+    selectedVisualNodeId = duplicated.id;
     markPromptGraphDirty();
   }
 
-  /** @param {string} type */
-  function defaultRoleForType(type) {
-    if (type === "current_user_message") return "user";
-    if (type === "session_log") return "messages";
-    return "system";
+  function promptNodeFallbackPath() {
+    return files[0]?.path || "scenario.md";
   }
 
   /**
@@ -657,9 +891,9 @@
     const nodes = promptNodes();
     if (nodes.some((n, i) => i !== index && n.id === id)) return translateNow("editor.idExists", { id });
     if (!promptGraph) return "";
-    const updated = [...nodes];
-    updated[index] = { ...updated[index], id };
-    promptGraph = { ...promptGraph, nodes: updated };
+    const nextGraph = renamePromptNodeInGraph(promptGraph, nodes, index, id);
+    if (!nextGraph) return "";
+    promptGraph = nextGraph;
     selectedVisualNodeId = id;
     markPromptGraphDirty();
     return "";
@@ -671,19 +905,7 @@
    * @param {string} newType
    */
   function changeNodeType(index, node, newType) {
-    /** @type {Record<string, any>} */
-    const next = { ...node, type: newType };
-    const shouldHavePath = newType === "file";
-    if (shouldHavePath && !next.path) {
-      next.path = files[0]?.path || "scenario.md";
-    } else if (!shouldHavePath) {
-      delete next.path;
-    }
-    const defaultRole = defaultRoleForType(newType);
-    if (node.role !== defaultRole && (newType === "current_user_message" || newType === "session_log")) {
-      next.role = defaultRole;
-    }
-    updateNode(index, next);
+    updateNode(index, normalizeNodeForType({ ...node, role: defaultRoleForType(newType) }, newType, promptNodeFallbackPath()));
   }
 
   function submitAddNode() {
@@ -694,16 +916,14 @@
     if (promptNodes().some((n) => n.id === id)) { newNodeError = translateNow("editor.idExists", { id }); return; }
     const maxOrder = promptNodes().reduce((max, n) => Math.max(max, n.order ?? 0), 0);
     /** @type {Record<string, any>} */
-    const newNode = {
+    const newNode = normalizeNodeForType({
       id,
       type: newNodeType,
       role: newNodeRole,
       order: maxOrder + 10,
       required: newNodeRequired,
-    };
-    if (newNodeType === "file") {
-      newNode.path = newNodePath || files[0]?.path || "scenario.md";
-    }
+      ...(newNodeType === "file" ? { path: newNodePath || files[0]?.path || "scenario.md" } : {})
+    }, newNodeType, promptNodeFallbackPath());
     const nodes = [...promptNodes(), newNode];
     promptGraph = { ...promptGraph, nodes };
     selectedVisualNodeId = id;
@@ -714,6 +934,49 @@
     newNodePath = "";
     newNodeRequired = false;
     markPromptGraphDirty();
+  }
+
+  /**
+   * @param {number} index
+   * @param {string} source
+   * @param {boolean} enabled
+   */
+  function updateRagSource(index, source, enabled) {
+    const node = promptNodes()[index];
+    if (!node) return;
+    updateNode(index, setRagSource(node, source, enabled));
+  }
+
+  /**
+   * @param {number} index
+   * @param {string} key
+   * @param {string} value
+   */
+  function updateRagTypeBudget(index, key, value) {
+    const node = promptNodes()[index];
+    if (!node) return;
+    updateNode(index, setRagTypeBudget(node, key, optionalNumber(value)));
+  }
+
+  /**
+   * @param {number} index
+   * @param {string} field
+   * @param {string} value
+   */
+  function updateOptionalNumberField(index, field, value) {
+    const node = promptNodes()[index];
+    if (!node) return;
+    updateNode(index, setOptionalNumberField(node, field, optionalNumber(value)));
+  }
+
+  /**
+   * @param {number} index
+   * @param {boolean} enabled
+   */
+  function updateBudgetEnabled(index, enabled) {
+    const node = promptNodes()[index];
+    if (!node) return;
+    updateNode(index, setBudgetEnabled(node, enabled));
   }
 
   async function loadStarts() {
@@ -734,17 +997,19 @@
   }
 
   async function loadScenarioSettings() {
-    if (!route.scenarioId) return;
+    if (!route.scenarioId) return scenarioSettings;
     try {
       const payload = await getScenarioSettings(route.scenarioId);
       scenarioSettings = payload.settings || { prompt_graph_mode: "common" };
+      return scenarioSettings;
     } catch {
       // non-fatal: keep defaults
+      return scenarioSettings;
     }
   }
 
   async function saveScenarioSettings(newSettings = scenarioSettings) {
-    if (!route.scenarioId || savingSettings) return;
+    if (!route.scenarioId || savingSettings) return scenarioSettings;
     savingSettings = true;
     settingsMessage = "";
     settingsError = "";
@@ -752,11 +1017,40 @@
       const payload = await updateScenarioSettings(route.scenarioId, newSettings);
       scenarioSettings = payload.settings || newSettings;
       settingsMessage = translateNow("editor.saved");
+      return scenarioSettings;
     } catch (caught) {
       settingsError = caught instanceof Error ? caught.message : translateNow("editor.saveGraphError");
+      return scenarioSettings;
     } finally {
       savingSettings = false;
     }
+  }
+
+  function confirmDiscardPromptChanges() {
+    return !promptGraphDirty || window.confirm(translateNow("editor.unsavedWarning"));
+  }
+
+  /** @param {boolean} enabled */
+  async function setPromptGraphMode(enabled) {
+    if (!confirmDiscardPromptChanges()) {
+      return;
+    }
+    const mode = enabled ? "per_start" : "common";
+    scenarioSettings = { ...scenarioSettings, prompt_graph_mode: mode };
+    await saveScenarioSettings({ prompt_graph_mode: mode });
+    if (scenarioSettings.prompt_graph_mode === "per_start") {
+      await loadStarts();
+      const startId = selectedStartTabId || starts[0]?.id || "";
+      selectedStartTabId = startId;
+      if (startId) {
+        await loadStartPromptGraph(startId);
+      }
+      return;
+    }
+    selectedStartTabId = "";
+    activeStartId = "";
+    currentGraphOwnFlag = true;
+    await loadPromptGraph();
   }
 
   /** @param {string} startId Load a start's prompt graph into the editor. */
@@ -773,7 +1067,8 @@
       promptGraphMessage = "";
       currentGraphOwnFlag = payload.own_graph ?? true;
       activeStartId = startId;
-      selectedVisualNodeId = promptGraph?.nodes?.[0]?.id || "";
+      selectedStartTabId = startId;
+      selectedVisualNodeId = sortPromptNodes(/** @type {Array<Record<string, any>>} */ (promptGraph?.nodes || []))[0]?.id || "";
     } catch (caught) {
       promptGraphError = caught instanceof Error ? caught.message : translateNow("editor.loadGraphError");
       promptGraph = null;
@@ -790,7 +1085,8 @@
       promptGraphError = "";
       promptGraphMessage = "";
       try {
-        const payload = await updateStartPromptGraph(route.scenarioId, activeStartId, promptGraph);
+        const normalizedGraph = graphWithNormalizedOrder(promptGraph);
+        const payload = await updateStartPromptGraph(route.scenarioId, activeStartId, normalizedGraph);
         promptGraph = payload.graph || null;
         promptGraphSource = payload.source || "start";
         promptGraphWarnings = payload.warnings || [];
@@ -827,6 +1123,7 @@
   /** @param {string} startId */
   async function switchStartTab(startId) {
     if (startId === activeStartId && promptGraph) return;
+    if (!confirmDiscardPromptChanges()) return;
     selectedStartTabId = startId;
     await loadStartPromptGraph(startId);
   }
@@ -991,7 +1288,36 @@
   <p class="notice">{$t("editor.loadingFiles")}</p>
 {:else}
   <div class="editor-layout">
-    <aside class="panel source-tree" aria-labelledby="source-tree-heading">
+    {#snippet editorTabBar()}
+      <h3 id="editor-heading">
+        {#if activeTab === "markdown"}
+          <FilePenLine size={18} aria-hidden="true" /> {selectedPath || "No file"}
+        {:else if activeTab === "prompt"}
+          <Network size={18} aria-hidden="true" /> Prompt Graph
+        {:else}
+          <Database size={18} aria-hidden="true" /> Knowledge
+        {/if}
+      </h3>
+      <div class="segmented-control">
+        <button class:selected={activeTab === "markdown"} type="button" onclick={() => (activeTab = "markdown")}>
+          Markdown
+        </button>
+        <button class:selected={activeTab === "prompt"} type="button" onclick={() => { activeTab = "prompt"; if (!starts.length) void loadStarts(); }}>
+          Prompt
+        </button>
+        <button class:selected={activeTab === "knowledge"} type="button" onclick={() => { activeTab = "knowledge"; void loadRagStatus(); void loadMemory(); }}>
+          Knowledge
+        </button>
+      </div>
+    {/snippet}
+
+    {#if isMobile}
+      <div class="panel-header compact mobile-editor-tabs">
+        {@render editorTabBar()}
+      </div>
+    {/if}
+
+    <aside class="panel source-tree" class:hidden={activeTab !== "markdown"} aria-labelledby="source-tree-heading">
       <div class="source-tree-header">
         <h3 id="source-tree-heading"><ListTree size={18} aria-hidden="true" /> Vault Tree</h3>
         <button
@@ -1026,23 +1352,11 @@
     </aside>
 
     <section class="panel editor-panel" aria-labelledby="editor-heading">
-      <div class="panel-header compact">
-        <h3 id="editor-heading"><FilePenLine size={18} aria-hidden="true" /> {selectedPath || "No file"}</h3>
-        <div class="segmented-control">
-          <button class:selected={activeTab === "markdown"} type="button" onclick={() => (activeTab = "markdown")}>
-            Markdown
-          </button>
-          <button class:selected={activeTab === "prompt"} type="button" onclick={() => { activeTab = "prompt"; if (!starts.length) void loadStarts(); }}>
-            Prompt
-          </button>
-          <button class:selected={activeTab === "rag"} type="button" onclick={() => { activeTab = "rag"; void loadRagStatus(); }}>
-            RAG
-          </button>
-          <button class:selected={activeTab === "memory"} type="button" onclick={() => { activeTab = "memory"; void loadMemory(); }}>
-            {$t("editor.memoryList")}
-          </button>
+      {#if !isMobile}
+        <div class="panel-header compact">
+          {@render editorTabBar()}
         </div>
-      </div>
+      {/if}
 
       {#if activeTab === "markdown"}
         <SourceEditorPanel
@@ -1061,265 +1375,403 @@
           expandSourceEditor={() => (sourceEditorExpanded = true)}
         />
       {:else if activeTab === "prompt"}
-        <div class="starts-settings-row">
-          <label class="inline-check">
-            <input
-              type="checkbox"
-              checked={scenarioSettings.prompt_graph_mode === "per_start"}
-              onchange={(e) => {
-                const mode = e.currentTarget.checked ? "per_start" : "common";
-                scenarioSettings = { ...scenarioSettings, prompt_graph_mode: mode };
-                if (mode === "per_start" && starts.length && !selectedStartTabId) {
-                  selectedStartTabId = starts[0].id;
-                }
-                void saveScenarioSettings({ prompt_graph_mode: mode });
-                if (!starts.length) void loadStarts();
-              }}
-            />
-            <span>{$t("editor.perStartMode")}</span>
-          </label>
-          {#if settingsMessage}<span class="mini-ok">{settingsMessage}</span>{/if}
-          {#if settingsError}<span class="mini-error">{settingsError}</span>{/if}
-        </div>
-
-        {#if scenarioSettings.prompt_graph_mode === "per_start" && starts.length}
-          <div class="starts-tab-bar">
-            {#each starts as start}
-              <button
-                class:selected={selectedStartTabId === start.id}
-                type="button"
-                onclick={() => void switchStartTab(start.id)}
-              >
-                {start.name || start.id}
-                <span
-                  class="manifest-badge {start.has_manifest ? 'badge-on' : 'badge-off'}"
-                  title={start.has_manifest ? $t("editor.startHasManifest") : $t("editor.startNoManifest")}
-                >{start.has_manifest ? "✓" : "!"}</span>
-              </button>
-            {/each}
-          </div>
-        {/if}
-        {#if scenarioSettings.prompt_graph_mode === "per_start" && !selectedStartTabId}
-          <p class="notice">{$t("editor.selectStartTab")}</p>
-        {:else if loadingPromptGraph}
-          <p class="notice">{$t("editor.loadingGraph")}</p>
-        {:else if promptGraphError}
-          <p class="notice error-notice">{promptGraphError}</p>
-        {:else if promptGraph}
-          <div class="prompt-graph-meta">
-            <span>graph: {promptGraph.id}</span>
-            <span>source: {promptGraphSource || "unknown"}</span>
-            <span>version: {promptGraph.version}</span>
-            {#if scenarioSettings.prompt_graph_mode === "per_start" && !currentGraphOwnFlag}
-              <span class="graph-inherited-notice">{$t("editor.graphInherited")}</span>
+        <div class="prompt-tab-content">
+          <div class="prompt-actions-bar">
+            {#if promptGraph}
+              <div class="prompt-graph-meta-compact">
+                <span>graph: {promptGraph.id}</span>
+                <span>v{promptGraph.version}</span>
+                {#if scenarioSettings.prompt_graph_mode === "per_start" && !currentGraphOwnFlag}
+                  <span class="graph-inherited-notice">{$t("editor.graphInherited")}</span>
+                {/if}
+                {#if promptGraphDirty}
+                  <span class="dirty-badge">未保存</span>
+                {/if}
+                {#if scenarioSettings.prompt_graph_mode === "per_start" && activeStartId}
+                  <button class="meta-inline-button" type="button" onclick={() => void openManifestModal(activeStartId)}>
+                    manifest
+                  </button>
+                {/if}
+              </div>
             {/if}
-            {#if promptGraphDirty}
-              <span>unsaved changes</span>
-            {/if}
-            {#if scenarioSettings.prompt_graph_mode === "per_start" && activeStartId}
-              <button class="meta-inline-button" type="button" onclick={() => void openManifestModal(activeStartId)}>
-                manifest
+            <label class="inline-check per-start-toggle">
+              <input
+                type="checkbox"
+                checked={scenarioSettings.prompt_graph_mode === "per_start"}
+                onchange={(e) => void setPromptGraphMode(e.currentTarget.checked)}
+              />
+              <span>{$t("editor.perStartMode")}</span>
+            </label>
+            {#if settingsMessage}<span class="mini-ok">{settingsMessage}</span>{/if}
+            {#if settingsError}<span class="mini-error">{settingsError}</span>{/if}
+            {#if promptGraph}
+              <button type="button" disabled={savingPromptGraph} onclick={() => scenarioSettings.prompt_graph_mode === "per_start" && activeStartId ? void loadStartPromptGraph(activeStartId) : void loadPromptGraph()}>
+                <RotateCcw size={15} aria-hidden="true" /> {$t("editor.reload")}
               </button>
-            {/if}
-            <div class="meta-view-toggle">
-              <button class:selected={promptView === "table"} type="button" onclick={() => (promptView = "table")}>
-                {$t("editor.viewTable")}
+              <button type="button" disabled={savingPromptGraph || !promptGraphDirty} onclick={() => void savePromptGraphRouted()}>
+                <Save size={15} aria-hidden="true" /> {savingPromptGraph ? $t("editor.saving") : $t("editor.save")}
               </button>
-              <button class:selected={promptView === "visual"} type="button" onclick={() => (promptView = "visual")}>
-                {$t("editor.viewVisual")}
-              </button>
-            </div>
-          </div>
-
-          <div class="prompt-editor-actions">
-            <button type="button" disabled={savingPromptGraph || !promptGraphDirty} onclick={() => void savePromptGraphRouted()}>
-              <Save size={15} aria-hidden="true" /> {savingPromptGraph ? $t("editor.saving") : $t("editor.save")}
-            </button>
-            <button type="button" disabled={savingPromptGraph} onclick={() => scenarioSettings.prompt_graph_mode === "per_start" && activeStartId ? void loadStartPromptGraph(activeStartId) : void loadPromptGraph()}>
-              <RotateCcw size={15} aria-hidden="true" /> {$t("editor.reload")}
-            </button>
-            {#if starts.length && scenarioSettings.prompt_graph_mode === "common"}
-              <button type="button" disabled={duplicatingGraph} onclick={() => { duplicateGraphModal = true; duplicateGraphTargetId = starts[0]?.id || ""; duplicateGraphMessage = ""; duplicateGraphError = ""; }}>
-                <Copy size={15} aria-hidden="true" /> {$t("editor.duplicateGraph")}
-              </button>
-            {/if}
-            {#if promptGraphMessage}
-              <span>{promptGraphMessage}</span>
+              {#if starts.length && scenarioSettings.prompt_graph_mode === "common"}
+                <button type="button" disabled={duplicatingGraph} onclick={() => { duplicateGraphModal = true; duplicateGraphTargetId = starts[0]?.id || ""; duplicateGraphMessage = ""; duplicateGraphError = ""; }}>
+                  <Copy size={15} aria-hidden="true" /> {$t("editor.duplicateGraph")}
+                </button>
+              {/if}
+              {#if promptGraphMessage}
+                <span>{promptGraphMessage}</span>
+              {/if}
+              <div class="meta-view-toggle">
+                <button class:selected={promptView === "panels"} type="button" onclick={() => (promptView = "panels")}>
+                  {$t("editor.viewPanels")}
+                </button>
+                <button class:selected={promptView === "visual"} type="button" onclick={() => (promptView = "visual")}>
+                  {$t("editor.viewVisual")}
+                </button>
+              </div>
             {/if}
           </div>
 
-          {#if promptGraphWarnings.length}
-            <div class="notice">
-              {#each promptGraphWarnings as warning}
-                <div>{warning}</div>
+          {#if scenarioSettings.prompt_graph_mode === "per_start" && starts.length}
+            <div class="starts-tab-bar">
+              {#each starts as start}
+                <button
+                  class:selected={selectedStartTabId === start.id}
+                  type="button"
+                  onclick={() => void switchStartTab(start.id)}
+                >
+                  {start.name || start.id}
+                  <span
+                    class="manifest-badge {start.has_manifest ? 'badge-on' : 'badge-off'}"
+                    title={start.has_manifest ? $t("editor.startHasManifest") : $t("editor.startNoManifest")}
+                  >{start.has_manifest ? "✓" : "!"}</span>
+                </button>
               {/each}
             </div>
           {/if}
 
-          {#if promptView === "table"}
-            <div class="prompt-table" role="table" aria-label="Prompt composition">
-              <div role="row" class="prompt-row heading">
-                <span>order</span>
-                <span>node</span>
-                <span>type</span>
-                <span>source</span>
-                <span>role</span>
-                <span>required</span>
-                <span>budget</span>
-                <span>condition</span>
-                <span>move</span>
-              </div>
-              {#each promptNodes() as node, index}
-                <div role="row" class="prompt-row">
-                  <label>
-                    <span class="sr-only">order</span>
-                    <input
-                      class="compact-input"
-                      type="number"
-                      value={node.order}
-                      onchange={(event) => updateNodeField(index, "order", optionalNumber(event.currentTarget.value) ?? node.order)}
-                    />
-                  </label>
-                  <label>
-                    <span class="sr-only">node id</span>
-                    <input
-                      class="compact-input"
-                      type="text"
-                      value={node.id}
-                      onchange={(e) => {
-                        const err = renameNode(index, e.currentTarget.value);
-                        if (err) { e.currentTarget.value = node.id; e.currentTarget.setCustomValidity(err); e.currentTarget.reportValidity(); }
-                        else { e.currentTarget.setCustomValidity(""); }
-                      }}
-                    />
-                  </label>
-                  <label>
-                    <span class="sr-only">node type</span>
-                    <select class="compact-input" value={node.type}
-                      onchange={(e) => changeNodeType(index, node, e.currentTarget.value)}>
-                      {#each promptNodeTypes as pt}<option value={pt}>{pt}</option>{/each}
-                    </select>
-                  </label>
-                  {#if node.type === "file"}
-                    <label>
-                      <span class="sr-only">source</span>
-                      <select
-                        class="compact-input"
-                        value={node.path || ""}
-                        onchange={(event) => updateNodeField(index, "path", event.currentTarget.value)}
-                      >
-                        {#each fileNodePathOptions(node) as path}
-                          <option value={path}>{path}</option>
-                        {/each}
-                      </select>
-                    </label>
-                  {:else}
-                    <span>{nodeSource(node)}</span>
-                  {/if}
-                  <label>
-                    <span class="sr-only">role</span>
-                    <select
-                      class="compact-input"
-                      value={node.role}
-                      onchange={(event) => updateNodeField(index, "role", event.currentTarget.value)}
-                    >
-                      {#each promptRoles as role}
-                        <option value={role}>{role}</option>
-                      {/each}
-                    </select>
-                  </label>
-                  <label class="inline-check">
-                    <input
-                      type="checkbox"
-                      checked={node.required === true}
-                      onchange={(event) => updateNodeField(index, "required", event.currentTarget.checked)}
-                    />
-                    <span>{node.required ? "yes" : "no"}</span>
-                  </label>
-                  {#if node.type === "session_log"}
-                    <label>
-                      <span class="sr-only">budget</span>
-                      <input
-                        class="compact-input"
-                        type="number"
-                        min="0"
-                        value={node.token_budget ?? ""}
-                        placeholder="budget"
-                        onchange={(event) => updateNodeField(index, "token_budget", optionalNumber(event.currentTarget.value))}
-                      />
-                    </label>
-                  {:else if node.type === "rag"}
-                    <div class="budget-pair">
-                      <input
-                        class="compact-input"
-                        type="number"
-                        min="0"
-                        value={node.limit ?? ""}
-                        placeholder="limit"
-                        title="result limit"
-                        onchange={(event) => updateNodeField(index, "limit", optionalNumber(event.currentTarget.value))}
-                      />
-                      <input
-                        class="compact-input"
-                        type="number"
-                        min="0"
-                        value={node.token_budget ?? ""}
-                        placeholder="tokens"
-                        title="token budget"
-                        onchange={(event) => updateNodeField(index, "token_budget", optionalNumber(event.currentTarget.value))}
-                      />
-                    </div>
-                  {:else}
-                    <span></span>
-                  {/if}
-                  <label>
-                    <span class="sr-only">condition</span>
-                    <select
-                      class="compact-input"
-                      value={conditionMode(node)}
-                      title={nodeCondition(node)}
-                      onchange={(event) => updateCondition(index, node, event.currentTarget.value)}
-                    >
-                      <option value="none">none</option>
-                      <option value="image_enabled">image enabled</option>
-                      <option value="image_disabled">image disabled</option>
-                    </select>
-                  </label>
-                  <span class="row-actions">
-                    <button class="icon-button compact-icon" type="button" title={$t("editor.duplicateNode")} onclick={() => duplicateNode(index)}>
-                      <Copy size={14} aria-hidden="true" />
-                    </button>
-                    <button class="icon-button compact-icon" type="button" title={$t("editor.moveUp")} disabled={index === 0} onclick={() => moveNode(index, "up")}>
-                      <ArrowUp size={14} aria-hidden="true" />
-                    </button>
-                    <button
-                      class="icon-button compact-icon"
-                      type="button"
-                      title={$t("editor.moveDown")}
-                      disabled={index === promptNodes().length - 1}
-                      onclick={() => moveNode(index, "down")}
-                    >
-                      <ArrowDown size={14} aria-hidden="true" />
-                    </button>
-                  </span>
-                </div>
-              {/each}
-            </div>
+          {#if scenarioSettings.prompt_graph_mode === "per_start" && !selectedStartTabId}
+            <p class="notice">{$t("editor.selectStartTab")}</p>
+          {:else if loadingPromptGraph}
+            <p class="notice">{$t("editor.loadingGraph")}</p>
+          {:else if promptGraphError}
+            <p class="notice error-notice">{promptGraphError}</p>
+          {:else if promptGraph}
 
-            <PromptPreviewPanel
-              {loadingPreviewChoices}
-              {loadingPromptPreview}
-              {promptPreviewError}
-              {promptPreview}
-              {sessions}
-              {personas}
-              bind:previewSessionId
-              bind:previewPersonaId
-              bind:previewProfileId
-              bind:previewUserMessage
-              {roleplayProfiles}
-              {runPromptPreview}
-            />
+            {#if visiblePromptGraphWarnings.length}
+              <div class="notice">
+                {#each visiblePromptGraphWarnings as warning}
+                  <div>{warning}</div>
+                {/each}
+              </div>
+            {/if}
+
+            {#if promptView === "panels"}
+              <div class="prompt-3pane">
+                <PromptNodeList
+                  nodes={promptNodeList}
+                  selectedNodeId={selectedVisualNodeId}
+                  {draggedNodeId}
+                  {dragTargetNodeId}
+                  {dragDropAfter}
+                  selectNode={selectPromptNodeFromList}
+                  {startNodeDrag}
+                  addNode={openAddPromptNodeForm}
+                />
+
+                <!-- Middle: detail editor -->
+                <div class="detail-pane">
+                  <div class="detail-pane-header">
+                    <h4>
+                      {#if selectedPromptNode && !addingNode}
+                        <span class="type-badge {nodeTypeCssClass(selectedPromptNode.type || '')}">{nodeTypeBadge(selectedPromptNode.type || '')}</span>
+                      {/if}
+                      {selectedPromptNode?.id || (addingNode ? $t("editor.newNode") : $t("editor.noSelection"))}
+                    </h4>
+                    {#if selectedPromptNode && !addingNode}
+                      <div class="detail-pane-actions">
+                        <button
+                          class="icon-button"
+                          type="button"
+                          title={$t("editor.duplicateNode")}
+                          onclick={() => duplicateNode(selectedPromptNodeIndex)}
+                        >
+                          <Copy size={15} aria-hidden="true" />
+                        </button>
+                        <button
+                          class="icon-button"
+                          type="button"
+                          title={$t("editor.deleteNode")}
+                          onclick={() => requestDeleteNode(selectedPromptNodeIndex)}
+                        >
+                          <Trash2 size={15} aria-hidden="true" />
+                        </button>
+                      </div>
+                    {/if}
+                  </div>
+
+                  {#key selectedVisualNodeId}
+                  <div class="detail-scroll">
+                    {#if addingNode}
+                      <div class="detail-section">
+                        <div class="section-label">新規ノード</div>
+                        <div class="field-row">
+                          <span class="field-label">ID</span>
+                          <div class="field-val"><input class="compact-input" type="text" bind:value={newNodeId} placeholder="node_id" /></div>
+                        </div>
+                        <div class="field-row">
+                          <span class="field-label">Type</span>
+                          <div class="field-val">
+                            <select class="compact-input" bind:value={newNodeType}
+                              onchange={() => { newNodeRole = defaultRoleForType(newNodeType); }}>
+                              {#each promptNodeTypes as t}<option value={t}>{t}</option>{/each}
+                            </select>
+                          </div>
+                        </div>
+                        <div class="field-row">
+                          <span class="field-label">Role</span>
+                          <div class="field-val">
+                            <select class="compact-input" bind:value={newNodeRole}>
+                              {#each promptRoles as r}<option value={r}>{r}</option>{/each}
+                            </select>
+                          </div>
+                        </div>
+                        {#if newNodeType === "file"}
+                          <div class="field-row">
+                            <span class="field-label">Path</span>
+                            <div class="field-val">
+                              <select class="compact-input" bind:value={newNodePath}>
+                                {#each files.map((f) => f.path) as p}<option value={p}>{p}</option>{/each}
+                              </select>
+                            </div>
+                          </div>
+                        {/if}
+                        <div class="field-row">
+                          <span class="field-label">Required</span>
+                          <div class="field-val"><label class="inline-check"><input type="checkbox" bind:checked={newNodeRequired} /><span>必須ノード</span></label></div>
+                        </div>
+                        {#if newNodeError}
+                          <p class="mini-error">{newNodeError}</p>
+                        {/if}
+                        <div class="field-row">
+                          <div class="field-val" style="display:flex;gap:6px;">
+                            <button type="button" class="primary-button" onclick={submitAddNode}>{$t("editor.add")}</button>
+                            <button type="button" onclick={() => { addingNode = false; newNodeError = ""; }}>{$t("common.cancel")}</button>
+                          </div>
+                        </div>
+                      </div>
+                    {:else if selectedPromptNode}
+                      {@const node = selectedPromptNode}
+                      {@const idx = selectedPromptNodeIndex}
+                      <div class="detail-section">
+                        <div class="section-label">基本設定</div>
+                        <div class="field-row">
+                          <span class="field-label">ID</span>
+                          <div class="field-val">
+                            <input
+                              class="compact-input"
+                              type="text"
+                              value={node?.id}
+                              onchange={(e) => {
+                                const err = renameNode(idx, e.currentTarget.value);
+                                if (err) { e.currentTarget.value = node?.id ?? ""; e.currentTarget.setCustomValidity(err); e.currentTarget.reportValidity(); }
+                                else { e.currentTarget.setCustomValidity(""); }
+                              }}
+                            />
+                          </div>
+                        </div>
+                        <div class="field-row">
+                          <span class="field-label">Type</span>
+                          <div class="field-val">
+                            <select class="compact-input" value={node?.type}
+                              onchange={(e) => changeNodeType(idx, node ?? {}, e.currentTarget.value)}>
+                              {#each promptNodeTypes as pt}<option value={pt}>{pt}</option>{/each}
+                            </select>
+                          </div>
+                        </div>
+                        <div class="field-row">
+                          <span class="field-label">Role</span>
+                          <div class="field-val">
+                            <select class="compact-input" value={node?.role}
+                              onchange={(e) => updateNodeField(idx, "role", e.currentTarget.value)}>
+                              {#each promptRoles as r}<option value={r}>{r}</option>{/each}
+                            </select>
+                          </div>
+                        </div>
+                        <div class="field-row">
+                          <span class="field-label">Order</span>
+                          <div class="field-val">
+                            <input
+                              class="compact-input short"
+                              type="number"
+                              value={node?.order ?? ""}
+                              onchange={(e) => updateNodeOrder(idx, e.currentTarget.value)}
+                            />
+                          </div>
+                        </div>
+                        <div class="field-row">
+                          <span class="field-label">Required</span>
+                          <div class="field-val">
+                            <label class="inline-check"><input type="checkbox" checked={node?.required}
+                              onchange={(e) => updateNodeField(idx, "required", e.currentTarget.checked)} /><span>必須ノード</span></label>
+                          </div>
+                        </div>
+                        <div class="field-row">
+                          <span class="field-label">Condition</span>
+                          <div class="field-val">
+                            <select class="compact-input" value={conditionMode(node || {})}
+                              onchange={(e) => updateCondition(idx, node || {}, e.currentTarget.value)}>
+                              <option value="none">{$t("editor.condNone")}</option>
+                              <option value="image_enabled">{$t("editor.condImageOn")}</option>
+                              <option value="image_disabled">{$t("editor.condImageOff")}</option>
+                            </select>
+                          </div>
+                        </div>
+                        {#if node?.type === "file"}
+                          <div class="field-row">
+                            <span class="field-label">Path</span>
+                            <div class="field-val">
+                              <select class="compact-input" value={node?.path || ""}
+                                onchange={(e) => updateNodeField(idx, "path", e.currentTarget.value)}>
+                                {#each fileNodePathOptions(node || {}) as p}<option value={p}>{p}</option>{/each}
+                              </select>
+                            </div>
+                          </div>
+                        {/if}
+                      </div>
+
+                      {#if node?.type === "rag"}
+                        <div class="detail-section">
+                          <div class="section-label">RAG ソース</div>
+                          <div class="field-row">
+                            <span class="field-label">Sources</span>
+                            <div class="field-val rag-src-row">
+                              {#each RAG_SOURCE_OPTIONS as source}
+                                <label class="rag-src-item">
+                                  <input
+                                    type="checkbox"
+                                    checked={ragSourceChecked(node || {}, source)}
+                                    onchange={(e) => updateRagSource(idx, source, e.currentTarget.checked)}
+                                  />
+                                  {source}
+                                </label>
+                              {/each}
+                            </div>
+                          </div>
+                          <div class="field-row">
+                            <span class="field-label">件数上限</span>
+                            <div class="field-val">
+                              <input class="compact-input short" type="number" min="0" value={node?.limit ?? ""}
+                                title={$t("editor.ragLimitHelp")}
+                                oninput={(e) => updateOptionalNumberField(idx, "limit", e.currentTarget.value)} />
+                            </div>
+                          </div>
+                        </div>
+                      {/if}
+
+                      {#if node?.type === "rag" || node?.type === "session_log"}
+                        <div class="detail-section">
+                          <div class="section-label">Token Budget</div>
+                          <div class="field-row">
+                            <span class="field-label">Budget</span>
+                            <div class="field-val">
+                              <label class="inline-check">
+                                <input
+                                  type="checkbox"
+                                  checked={budgetEnabled(node || {})}
+                                  onchange={(e) => updateBudgetEnabled(idx, e.currentTarget.checked)}
+                                />
+                                <span>有効</span>
+                              </label>
+                            </div>
+                          </div>
+                          {#if budgetEnabled(node || {})}
+                            <div class="field-row">
+                              <span class="field-label">合計上限</span>
+                              <div class="field-val">
+                                <input class="compact-input" type="number" min="0" value={node?.token_budget ?? ""}
+                                  oninput={(e) => updateOptionalNumberField(idx, "token_budget", e.currentTarget.value)} />
+                              </div>
+                            </div>
+                            {#if node?.type === "rag"}
+                              <div class="field-row">
+                                <span class="field-label">Keyword上限</span>
+                                <div class="field-val">
+                                  <input class="compact-input" type="number" min="0" value={node?.keyword_token_budget ?? ""}
+                                    title={$t("editor.ragKeywordBudgetHelp")}
+                                    oninput={(e) => updateOptionalNumberField(idx, "keyword_token_budget", e.currentTarget.value)} />
+                                </div>
+                              </div>
+                              <div class="field-row">
+                                <span class="field-label">type別</span>
+                                <div class="field-val budget-3col">
+                                  {#each RAG_TYPE_BUDGET_KEYS as key}
+                                    <div>
+                                      <div class="budget-sub">{key}</div>
+                                      <input
+                                        class="compact-input"
+                                        type="number"
+                                        min="0"
+                                        value={ragTypeBudgetValue(node || {}, key)}
+                                        placeholder={key}
+                                        title={$t("editor.ragTypeBudgetHelp")}
+                                        oninput={(e) => updateRagTypeBudget(idx, key, e.currentTarget.value)}
+                                      />
+                                    </div>
+                                  {/each}
+                                </div>
+                              </div>
+                            {/if}
+                          {:else}
+                            <p class="hint-copy">Budget disabled: retrieved content is not token-budgeted by this node.</p>
+                          {/if}
+                        </div>
+                      {/if}
+                    {:else}
+                      <p class="notice">{$t("editor.nodeSelectHint")}</p>
+                    {/if}
+                  </div>
+                  {/key}
+
+                  {#if selectedPromptNode && !addingNode}
+                    {@const idx = selectedPromptNodeIndex}
+                    <div class="node-action-bar">
+                      <span class="editing-label">{selectedPromptNode.id} を編集中</span>
+                      <button
+                        type="button"
+                        disabled={idx <= 0}
+                        onclick={() => moveNode(idx, "up")}
+                      >
+                        <ArrowUp size={15} aria-hidden="true" /> {$t("editor.moveUp")}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={idx >= promptNodeList.length - 1}
+                        onclick={() => moveNode(idx, "down")}
+                      >
+                        <ArrowDown size={15} aria-hidden="true" /> {$t("editor.moveDown")}
+                      </button>
+                    </div>
+                  {/if}
+                </div>
+
+                <!-- Right: preview -->
+                <div class="preview-pane">
+                  <PromptPreviewPanel
+                    compact={true}
+                    {loadingPreviewChoices}
+                    {loadingPromptPreview}
+                    {promptPreviewError}
+                    {promptPreview}
+                    {sessions}
+                    {personas}
+                    bind:previewSessionId
+                    bind:previewPersonaId
+                    bind:previewProfileId
+                    bind:previewUserMessage
+                    {roleplayProfiles}
+                    {runPromptPreview}
+                  />
+                </div>
+              </div>
           {:else}
             {#if isMobile}
               <p class="notice">{$t("editor.visualDesktopOnly")}</p>
@@ -1327,8 +1779,8 @@
               <div class="visual-workspace" aria-label="Visual prompt flow">
                 <div class="visual-canvas">
                   <SvelteFlow
-                    nodes={visualNodes()}
-                    edges={visualEdges()}
+                    nodes={visualFlowNodes}
+                    edges={visualFlowEdges}
                     fitView
                     nodesDraggable={false}
                     nodesConnectable={false}
@@ -1344,15 +1796,15 @@
                   <div class="panel-header compact">
                     <div>
                       <p class="eyebrow">Node</p>
-                      <h4>{selectedVisualNode()?.id || (addingNode ? $t("editor.newNode") : $t("editor.noSelection"))}</h4>
+                      <h4>{selectedPromptNode?.id || (addingNode ? $t("editor.newNode") : $t("editor.noSelection"))}</h4>
                     </div>
                     <div style="display:flex;gap:4px;align-items:center">
-                      {#if selectedVisualNode()}
+                      {#if selectedPromptNode}
                         <button
                           class="icon-button"
                           type="button"
                           title={$t("editor.duplicateNode")}
-                          onclick={() => duplicateNode(selectedVisualNodeIndex())}
+                          onclick={() => duplicateNode(selectedPromptNodeIndex)}
                         >
                           <Copy size={15} aria-hidden="true" />
                         </button>
@@ -1360,7 +1812,7 @@
                           class="icon-button"
                           type="button"
                           title={$t("editor.deleteNode")}
-                          onclick={() => deleteNode(selectedVisualNodeIndex())}
+                          onclick={() => requestDeleteNode(selectedPromptNodeIndex)}
                         >
                           <Trash2 size={15} aria-hidden="true" />
                         </button>
@@ -1417,9 +1869,10 @@
                     </div>
                   {/if}
 
-                  {#if selectedVisualNode()}
-                    {@const node = selectedVisualNode()}
-                    {@const idx = selectedVisualNodeIndex()}
+                  {#key selectedVisualNodeId}
+                  {#if selectedPromptNode}
+                    {@const node = selectedPromptNode}
+                    {@const idx = selectedPromptNodeIndex}
                     <div class="visual-node-edit">
                       <label class="visual-field">
                         <span class="visual-field-label">id</span>
@@ -1448,6 +1901,15 @@
                           {#each promptRoles as r}<option value={r}>{r}</option>{/each}
                         </select>
                       </label>
+                      <label class="visual-field">
+                        <span class="visual-field-label">order</span>
+                        <input
+                          class="compact-input"
+                          type="number"
+                          value={node?.order ?? ""}
+                          onchange={(e) => updateNodeOrder(idx, e.currentTarget.value)}
+                        />
+                      </label>
                       <label class="visual-field visual-field-check">
                         <span class="visual-field-label">required</span>
                         <input type="checkbox" checked={node?.required}
@@ -1472,11 +1934,70 @@
                         </select>
                       </label>
                       {#if node?.type === "rag" || node?.type === "session_log"}
-                        <label class="visual-field">
-                          <span class="visual-field-label">token budget</span>
-                          <input class="compact-input" type="number" min="0" value={node?.token_budget ?? ""}
-                            oninput={(e) => updateNodeField(idx, "token_budget", optionalNumber(e.currentTarget.value))} />
+                        <label class="visual-field visual-field-check">
+                          <span class="visual-field-label">budget</span>
+                          <input
+                            type="checkbox"
+                            checked={budgetEnabled(node || {})}
+                            onchange={(e) => updateBudgetEnabled(idx, e.currentTarget.checked)}
+                          />
                         </label>
+                        {#if budgetEnabled(node || {})}
+                          <label class="visual-field">
+                            <span class="visual-field-label">token budget</span>
+                            <input class="compact-input" type="number" min="0" value={node?.token_budget ?? ""}
+                              oninput={(e) => updateOptionalNumberField(idx, "token_budget", e.currentTarget.value)} />
+                          </label>
+                        {:else}
+                          <p class="hint-copy">Budget disabled for this node.</p>
+                        {/if}
+                      {/if}
+                      {#if node?.type === "rag"}
+                        <fieldset class="visual-field rag-source-options">
+                          <legend class="visual-field-label">{$t("editor.ragSources")}</legend>
+                          {#each RAG_SOURCE_OPTIONS as source}
+                            <label class="inline-check compact-check">
+                              <input
+                                type="checkbox"
+                                checked={ragSourceChecked(node || {}, source)}
+                                onchange={(e) => updateRagSource(idx, source, e.currentTarget.checked)}
+                              />
+                              <span>{source}</span>
+                            </label>
+                          {/each}
+                        </fieldset>
+                        <label class="visual-field">
+                          <span class="visual-field-label">limit</span>
+                          <input class="compact-input" type="number" min="0" value={node?.limit ?? ""}
+                            title={$t("editor.ragLimitHelp")}
+                            oninput={(e) => updateOptionalNumberField(idx, "limit", e.currentTarget.value)} />
+                        </label>
+                        {#if budgetEnabled(node || {})}
+                          <label class="visual-field">
+                            <span class="visual-field-label">keyword token budget</span>
+                            <input class="compact-input" type="number" min="0" value={node?.keyword_token_budget ?? ""}
+                              title={$t("editor.ragKeywordBudgetHelp")}
+                              oninput={(e) => updateOptionalNumberField(idx, "keyword_token_budget", e.currentTarget.value)} />
+                          </label>
+                          <fieldset class="visual-field type-budgets">
+                            <legend class="visual-field-label">{$t("editor.ragTypeBudgets")}</legend>
+                            {#each RAG_TYPE_BUDGET_KEYS as key}
+                              <label class="visual-field">
+                                <span class="visual-field-label">{key}</span>
+                                <input
+                                  class="compact-input"
+                                  type="number"
+                                  min="0"
+                                  value={ragTypeBudgetValue(node || {}, key)}
+                                  placeholder={key}
+                                  title={$t("editor.ragTypeBudgetHelp")}
+                                  oninput={(e) => updateRagTypeBudget(idx, key, e.currentTarget.value)}
+                                />
+                              </label>
+                            {/each}
+                          </fieldset>
+                          <p class="hint-copy">{$t("editor.ragBudgetHint")}</p>
+                        {/if}
                       {/if}
                     </div>
 
@@ -1490,7 +2011,7 @@
                       </button>
                       <button
                         type="button"
-                        disabled={idx >= promptNodes().length - 1}
+                        disabled={idx >= promptNodeList.length - 1}
                         onclick={() => moveNode(idx, "down")}
                       >
                         <ArrowDown size={15} aria-hidden="true" /> {$t("editor.moveDown")}
@@ -1499,6 +2020,7 @@
                   {:else if !addingNode}
                     <p class="notice">{$t("editor.nodeSelectHint")}</p>
                   {/if}
+                  {/key}
                 </aside>
               </div>
             {/if}
@@ -1506,8 +2028,10 @@
         {:else}
           <p class="notice">{$t("editor.noGraph")}</p>
         {/if}
-      {:else if activeTab === "rag"}
+        </div>
+      {:else if activeTab === "knowledge"}
         <div class="rag-status-panel">
+          <div class="knowledge-divider"><span>RAG</span></div>
           <div class="rag-section">
             <div class="rag-section-header">
               <h4>{$t("editor.keywordIndex")}</h4>
@@ -1586,9 +2110,9 @@
               <p class="rag-message">{vectorRebuildMessage}</p>
             {/if}
           </div>
-        </div>
-      {:else if activeTab === "memory"}
-        <div class="rag-status-panel">
+
+          <div class="knowledge-divider"><span>{$t("editor.memoryList")}</span></div>
+
           {#if memoryMessage}
             <p class="rag-message">{memoryMessage}</p>
           {/if}

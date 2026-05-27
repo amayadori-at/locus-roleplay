@@ -1,5 +1,41 @@
 # CHANGELOG
 
+## v1.2.3 (2026-05-26)
+
+### Prompt Graph エディタ改善
+
+- RAG node の詳細設定を Prompt Graph エディタから編集可能に — これまで JSON 直編集が必要だった以下の設定を、Prompt タブの編集 UI から操作できるようになった
+  - source 選択（memory / lore / characters をチェックボックスで切り替え）— memory 専用・lore 専用など用途を絞った RAG node を JSON 編集なしで作成できる
+  - type 別 token budget（`token_budgets.memory` / `token_budgets.lore` / `token_budgets.character`）— lore が default 2400 tokens で頭打ちになる問題を UI から調整できる
+  - keyword-triggered lore budget（`keyword_token_budget`）— keyword で引き込む Lore のトークン上限を UI から調整できる
+- Visual view の RAG `limit` 編集を追加 — Table view にはあったが Visual view に欠けていた取得件数上限の入力欄を、Visual detail panel にも追加
+- Table view に node の追加・削除を追加 — Table view は node の並び替えと field 編集のみ可能で、追加・削除は Visual view でしか操作できなかった。Mobile では Visual view が無効化されるため、mobile から node 構成を変更できない問題を解消
+- Table view と Visual view の編集可能範囲を統一 — view 間で編集できる設定に差があった。追加・削除・複製・上下移動・type 変更・role・required・condition・file path・RAG 設定・session_log budget の編集を両 view で操作可能に。view の違いは操作方法の違いのみになった
+- 新規 RAG node 作成時に実用的な初期値を補完 — node type を `rag` にした直後から、source・limit・token_budget・keyword_token_budget・token_budgets が適切な値で埋まった状態になる。既存 graph 読み込み時には補完しない
+
+### RAG の改善
+
+- ひらがな専用 n-gram の除外閾値を 4 文字以下に拡張 — 「された」「だった」「っていた」など 3〜4 文字の活用語尾・機能語が n-gram クエリ用語に混入しなくなった。5 文字以上のひらがな語（「されていた」等）は引き続き通す
+- stopword を大幅拡充 — 指示詞（この/その/あの/どの）、活用語尾（された/だった/している/していた/という/といった/ような）、丁寧語（です/ます/します/でした/ました）、汎用動詞（する/ある/いる/なる/言う/見る/思う/感じる）を追加。カタカナ固有名詞・漢字語・英数字語は影響を受けない
+- locus-rag の `keywords` マッチへの加点 — `<locus-rag keywords="...">` に設定したキーワードとクエリが一致した場合、Vault 作者が意図した検索シグナルとして高く評価されるようになった。偶発的な本文マッチの heading チャンクより優先されやすくなる
+- locus-rag の `priority` 属性サポート — `<locus-rag priority="25">` でチャンク単位の優先度を数値指定可能に。不正な値（非数値）は無視してエラーにならない
+- memory recency スコア — frontmatter の `created` 日付が新しい memory を優先的に Prompt へ投入。直近 30 日以内の memory ほど優先度が高く、古いほど下がる。日付フィールドが欠落・不正な場合は通常の重みで評価
+- `keywords_enabled: true` によるキーワードトリガー専用化 — frontmatter に `keywords_enabled: true` を設定したファイルは、設定した keywords がクエリに登場したときのみ Prompt へ投入される。クエリの内容語マッチによる意図しない投入がなくなるため、組織・設定系 Lore を確実な条件でのみ参照させたい場合に有効
+- `chunk_enabled` フラグによるキーワードトリガーのセクション投入対応 — `chunk_enabled: true`（デフォルト）でキーワードトリガーが locus-rag / 見出し単位のセクションごとに投入されるようになった。ファイル全体でなく必要な箇所だけを Prompt に載せられる。`chunk_enabled: false` で旧来のファイル全文投入を維持できる。locus-rag チャンクに独自 `keywords` がある場合はセクション単位でさらにフィルタリング
+
+### バックエンド改善
+
+- RAG node 保存時の validation を追加 — `source` の値が `memory` / `lore` / `characters` 以外の場合、`limit` / `keyword_token_budget` が非負数でない場合に保存を拒否して明確なエラーを返す
+- Prompt プレビューの RAG デバッグ情報を拡充 — 最新 Prompt プレビューの RAG ノード詳細に source・limit・token_budget・keyword_token_budget・token_budgets・取得件数・採用件数を表示。RAG node の設定が実際の Prompt にどう反映されたか確認しやすくなった
+
+### 互換性メモ
+
+- 既存セッションログ・State・Prompt Graph のデータ形式は引き続き読み込み可能
+- RAG スコアリング・keywords_enabled 対応の変更により、キーワードインデックスのバージョンを v3→v4 に更新。初回起動時に自動で再構築される（シナリオ規模によっては時間がかかる場合がある）
+- `keywords_enabled: true` を設定した既存 Lore ファイルは、n-gram RAG から除外されキーワードトリガー専用になる。挙動の変化を意図しない場合は `keywords_enabled: false` を明示するか、frontmatter からフィールドを削除してください
+
+---
+
 ## v1.2.2 (2026-05-26)
 
 ### バグ修正

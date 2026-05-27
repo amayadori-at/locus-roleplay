@@ -144,7 +144,8 @@ def keyword_triggered_lore_results(
     if not documents or not messages:
         return [], warnings
     excluded = exclude_paths or set()
-    results: list[dict[str, Any]] = []
+
+    matched_documents: list[tuple[RagDocument, list[str]]] = []
     for document in documents:
         if document.source_path in excluded:
             continue
@@ -152,23 +153,59 @@ def keyword_triggered_lore_results(
         matched = [keyword for keyword in keywords if any(keyword.lower() in message for message in messages)]
         if not matched:
             continue
-        priority = _priority(document.metadata)
-        results.append(
-            {
-                "source_path": document.source_path,
-                "type": document.type,
-                "title": document.title,
-                "score": priority,
-                "content": document.body.strip(),
-                "metadata": document.metadata,
-                "matched_terms": matched,
-                "matched_keywords": matched,
-                "match_type": "keyword",
-                "priority": priority,
-            }
-        )
-    results.sort(key=lambda item: (-item["priority"], item["source_path"]))
-    return results[:limit], warnings
+        matched_documents.append((document, matched))
+    matched_documents.sort(key=lambda item: (-_priority(item[0].metadata), item[0].source_path))
+    matched_documents = matched_documents[:limit]
+
+    results: list[dict[str, Any]] = []
+    for document, matched in matched_documents:
+        file_priority = _priority(document.metadata)
+        chunk_enabled = document.metadata.get("chunk_enabled") is not False
+        if chunk_enabled:
+            chunks = chunk_rag_document(
+                source_path=document.source_path,
+                doc_type=document.type,
+                title=document.title,
+                body=document.body,
+                metadata=document.metadata,
+                chunkable=True,
+            )
+            for chunk in chunks:
+                if not _chunk_keywords_match(chunk, messages):
+                    continue
+                chunk_priority = _priority(chunk.metadata)
+                results.append(
+                    {
+                        "source_path": chunk.source_path,
+                        "chunk_id": chunk.chunk_id,
+                        "heading_path": chunk.heading_path or [],
+                        "type": chunk.type,
+                        "title": chunk.title,
+                        "score": chunk_priority,
+                        "content": chunk.body.strip(),
+                        "metadata": chunk.metadata,
+                        "matched_terms": matched,
+                        "matched_keywords": matched,
+                        "match_type": "keyword",
+                        "priority": chunk_priority,
+                    }
+                )
+        else:
+            results.append(
+                {
+                    "source_path": document.source_path,
+                    "type": document.type,
+                    "title": document.title,
+                    "score": file_priority,
+                    "content": document.body.strip(),
+                    "metadata": document.metadata,
+                    "matched_terms": matched,
+                    "matched_keywords": matched,
+                    "match_type": "keyword",
+                    "priority": file_priority,
+                }
+            )
+    return results, warnings
 
 
 def load_scenario_file(vault: Vault, scenario_id: str, scenario_relative_path: str) -> RagDocument | None:
@@ -253,6 +290,8 @@ def documents_under(vault: Vault, base: Path, folder: str, *, recursive: bool) -
         metadata = dict(document.frontmatter)
         if metadata.get("rag") is False:
             continue
+        if metadata.get("keywords_enabled") is True:
+            continue  # handled exclusively by keyword trigger pipeline
         documents.extend(
             chunk_rag_document(
                 source_path=scenario_relative,
@@ -300,6 +339,27 @@ def _keyword_list(value: object, *, source_path: str) -> list[str]:
             seen.add(keyword)
             keywords.append(keyword)
     return keywords
+
+
+def _chunk_keywords_match(chunk: "RagDocument", messages: list[str]) -> bool:
+    """Return True if this chunk should be included based on its own keywords.
+
+    locus-rag chunks with keywords are only included when at least one keyword
+    matches the messages. Chunks without keywords (heading chunks, or locus-rag
+    chunks that omit keywords) are always included.
+
+    Uses metadata["locus_rag"]["keywords"] (chunk-own) rather than metadata["keywords"]
+    (which merges file-level frontmatter keywords and would cause false positives).
+    """
+    if chunk.metadata.get("chunk_type") != "locus-rag":
+        return True
+    locus_data = chunk.metadata.get("locus_rag")
+    if not isinstance(locus_data, dict):
+        return True
+    chunk_keywords = locus_data.get("keywords")
+    if not chunk_keywords:
+        return True
+    return any(kw.lower() in message for kw in chunk_keywords for message in messages)
 
 
 def _priority(metadata: dict[str, Any]) -> int | float:

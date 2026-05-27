@@ -29,6 +29,7 @@ PROMPT_GRAPH_NODE_TYPES = frozenset(
     }
 )
 REQUIRED_NODE_IDS = frozenset({"system_prompt", "selected_persona", "current_state", "recent_log", "current_user_message"})
+RAG_SOURCES = frozenset({"memory", "lore", "characters"})
 
 
 class PromptGraphError(VaultError):
@@ -222,6 +223,8 @@ def _validate_node(vault: Vault, scenario_id: str, node: object, index: int) -> 
         path = vault.resolve(f"rp/scenarios/{scenario_id}/{source_path}")
         if required and not path.is_file():
             raise PromptGraphError(f"Required file node '{node_id}' does not exist: {source_path}")
+    if node_type == "rag":
+        _validate_rag_node(node_id, node)
     if "token_budget" in node and (
         not isinstance(node["token_budget"], (int, float)) or isinstance(node["token_budget"], bool) or node["token_budget"] < 0
     ):
@@ -229,6 +232,30 @@ def _validate_node(vault: Vault, scenario_id: str, node: object, index: int) -> 
     if "token_budgets" in node:
         _validate_token_budgets(node_id, node["token_budgets"])
     return normalized
+
+
+def _validate_rag_node(node_id: str, node: dict[str, Any]) -> None:
+    if "source" in node:
+        source = node["source"]
+        if not isinstance(source, list) or not source:
+            raise PromptGraphError(f"Prompt graph node '{node_id}' source must be a non-empty array")
+        if not all(isinstance(item, str) for item in source):
+            raise PromptGraphError(
+                f"Prompt graph node '{node_id}' source must contain only: {', '.join(sorted(RAG_SOURCES))}"
+            )
+        invalid = [item for item in source if item not in RAG_SOURCES]
+        if invalid:
+            raise PromptGraphError(
+                f"Prompt graph node '{node_id}' source must contain only: {', '.join(sorted(RAG_SOURCES))}"
+            )
+    if "limit" in node and (not isinstance(node["limit"], int) or isinstance(node["limit"], bool) or node["limit"] < 0):
+        raise PromptGraphError(f"Prompt graph node '{node_id}' limit must be a non-negative integer")
+    if "keyword_token_budget" in node and (
+        not isinstance(node["keyword_token_budget"], (int, float))
+        or isinstance(node["keyword_token_budget"], bool)
+        or node["keyword_token_budget"] < 0
+    ):
+        raise PromptGraphError(f"Prompt graph node '{node_id}' keyword_token_budget must be a non-negative number")
 
 
 def _validate_source_path(value: str, node_id: str) -> str:
