@@ -1188,6 +1188,7 @@ def _scenario_prompt_preview_response(vault: Vault, scenario_id: str, query: dic
     session_id = _optional_query_id(query, "session_id")
     persona_id = _optional_query_id(query, "persona_id")
     profile_id = _optional_query_id(query, "profile_id")
+    starting_id = _optional_query_id(query, "starting_id")
     user_message = _query_string(query, "user_message")
     user_note = _query_string(query, "user_note", required=False)
     session_note = _query_string(query, "session_note", required=False) if "session_note" in query else None
@@ -1198,6 +1199,7 @@ def _scenario_prompt_preview_response(vault: Vault, scenario_id: str, query: dic
         session_id=session_id,
         persona_id=persona_id,
         profile_id=profile_id,
+        starting_id=starting_id,
         user_message=user_message,
         user_note=user_note,
         session_note=session_note,

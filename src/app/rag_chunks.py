@@ -214,6 +214,8 @@ def _chunk_metadata(
             result["locus_rag_title"] = locus_attrs["title"]
         result["tags"] = _merge_metadata_list(result.get("tags"), locus_attrs.get("tags"))
         result["keywords"] = _merge_metadata_list(result.get("keywords"), locus_attrs.get("keywords"))
+        if "priority" in locus_attrs:
+            result["priority"] = locus_attrs["priority"]
     return result
 
 
@@ -221,11 +223,16 @@ def _parse_locus_rag_attrs(raw_attrs: str) -> dict[str, Any]:
     attrs: dict[str, Any] = {}
     for match in _ATTR_RE.finditer(raw_attrs):
         key = match.group(1).strip().lower()
-        if key not in {"id", "title", "tags", "keywords"}:
+        if key not in {"id", "title", "tags", "keywords", "priority"}:
             continue
         value = (match.group(3) if match.group(3) is not None else match.group(4)).strip()
         if key in {"tags", "keywords"}:
             attrs[key] = _comma_list(value)
+        elif key == "priority":
+            try:
+                attrs[key] = float(value)
+            except (ValueError, TypeError):
+                pass
         elif value:
             attrs[key] = value
     return attrs

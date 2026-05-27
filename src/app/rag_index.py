@@ -17,7 +17,7 @@ class RagIndexError(VaultError):
     pass
 
 
-RAG_INDEX_VERSION = 3
+RAG_INDEX_VERSION = 4
 
 
 def rebuild_rag_index(vault: Vault, scenario_id: str) -> dict[str, Any]:
@@ -211,6 +211,8 @@ def _load_candidate_document(vault: Vault, scenario_id: str, candidate: _Candida
     metadata = dict(document.frontmatter)
     if metadata.get("rag") is False:
         return []
+    if metadata.get("keywords_enabled") is True:
+        return []  # handled exclusively by keyword trigger pipeline
     return chunk_rag_document(
         source_path=candidate.source_path,
         doc_type=document_type(candidate.folder, metadata),

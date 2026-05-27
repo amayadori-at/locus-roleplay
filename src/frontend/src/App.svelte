@@ -122,7 +122,7 @@
       </div>
     </aside>
 
-    <section class="workspace" aria-labelledby="workspace-heading">
+    <section class="workspace" class:scenario-edit={$route.name === ROUTE_NAMES.scenario} aria-labelledby="workspace-heading">
       {#if $route.name === ROUTE_NAMES.front}
       <FrontPage onNavigate={navigation} />
       {:else if $route.name === ROUTE_NAMES.scenario}

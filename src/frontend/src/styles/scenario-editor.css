@@ -158,6 +158,24 @@
   gap: 12px;
 }
 
+.knowledge-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--c-text-muted, #6b7280);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.knowledge-divider::before,
+.knowledge-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--c-border);
+}
+
 .rag-section-header {
   display: flex;
   align-items: center;

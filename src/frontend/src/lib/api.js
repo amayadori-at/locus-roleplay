@@ -297,6 +297,7 @@ export function updateScenarioPromptGraph(scenarioId, graph) {
  * @param {string} scenarioId
  * @param {{
  *   session_id?: string,
+ *   starting_id?: string,
  *   persona_id?: string,
  *   profile_id?: string,
  *   user_message: string,

@@ -5,9 +5,10 @@ from typing import Any
 
 from app.loaders import ModelProfile, Persona, Scenario, load_persona, load_profile, load_scenario
 from app.messages import is_conversation_role
-from app.prompt_graph import read_prompt_graph
+from app.prompt_graph import read_prompt_graph, read_start_prompt_graph
 from app.rag import (
     DEFAULT_KEYWORD_TRIGGER_TOKEN_BUDGET,
+    DEFAULT_RAG_TYPE_TOKEN_BUDGETS,
     DEFAULT_RAG_TOKEN_BUDGET,
     budget_rag_results,
     build_rag_query,
@@ -17,6 +18,7 @@ from app.rag import (
     retrieve_context,
 )
 from app.reasoning import sanitize_log_entries
+from app.scenario_settings import read_scenario_settings
 from app.state_session import read_current_state, read_session_log, read_session_metadata, read_session_state
 from app.token_usage import estimate_prompt_token_usage
 from app.vault import Vault, VaultError
@@ -37,6 +39,7 @@ def build_prompt_preview(
     session_id: str | None = None,
     persona_id: str | None = None,
     profile_id: str | None = None,
+    starting_id: str | None = None,
     user_note: str = "",
     session_note: str | None = None,
     scene_note: str | None = None,
@@ -51,6 +54,7 @@ def build_prompt_preview(
         session_id=session_id,
         persona_id=persona_id,
         profile_id=profile_id,
+        starting_id=starting_id,
         user_note=user_note,
         session_note=session_note,
         scene_note=scene_note,
@@ -68,6 +72,7 @@ def compose_prompt_graph(
     session_id: str | None = None,
     persona_id: str | None = None,
     profile_id: str | None = None,
+    starting_id: str | None = None,
     user_note: str = "",
     session_note: str | None = None,
     scene_note: str | None = None,
@@ -83,6 +88,7 @@ def compose_prompt_graph(
         metadata = read_session_metadata(vault, scenario_id, session_id)
         persona_id = persona_id or _metadata_string(metadata, "persona_id")
         profile_id = profile_id or _metadata_string(metadata, "rp_profile_id")
+        starting_id = starting_id or _metadata_text(metadata, "starting_id") or None
         session_note = _resolved_session_note(metadata, session_note, user_note)
         scene_note = scene_note if scene_note is not None else _metadata_text(metadata, "scene_note")
     else:
@@ -105,7 +111,8 @@ def compose_prompt_graph(
         raw_recent_log = sanitize_log_entries(recent_log_override)
     else:
         raw_recent_log = sanitize_log_entries(read_session_log(vault, scenario_id, session_id) if session_id else [])
-    graph = read_prompt_graph(vault, scenario_id)
+    graph_info = _select_prompt_graph(vault, scenario_id, starting_id)
+    graph = graph_info["graph"]
 
     active_mods: list[str] = _safe_string_list(metadata.get("active_mods"))
     pinned_characters: list[str] = _safe_string_list(metadata.get("pinned_characters"))
@@ -149,7 +156,13 @@ def compose_prompt_graph(
         "session_id": session_id,
         "persona_id": persona.id,
         "profile": _profile_summary(profile),
-        "graph": {"id": graph["id"], "version": graph["version"]},
+        "graph": {
+            "id": graph["id"],
+            "version": graph["version"],
+            "source": graph_info["source"],
+            "starting_id": graph_info["starting_id"],
+            "own_graph": graph_info["own_graph"],
+        },
         "expansions": expansions,
         "messages": messages,
         "message_count": len(messages),
@@ -157,6 +170,24 @@ def compose_prompt_graph(
         "token_usage": token_usage,
         "recent_log_selection": recent_log_selection,
         "selected_recent_log": recent_log,
+    }
+
+
+def _select_prompt_graph(vault: Vault, scenario_id: str, starting_id: str | None) -> dict[str, Any]:
+    settings = read_scenario_settings(vault, scenario_id)
+    if settings.get("prompt_graph_mode") == "per_start" and starting_id:
+        result = read_start_prompt_graph(vault, scenario_id, starting_id)
+        return {
+            "graph": result["graph"],
+            "source": result["source"],
+            "starting_id": starting_id,
+            "own_graph": result["own_graph"],
+        }
+    return {
+        "graph": read_prompt_graph(vault, scenario_id),
+        "source": "scenario",
+        "starting_id": None,
+        "own_graph": True,
     }
 
 
@@ -448,6 +479,7 @@ def _expand_node(
                 "included_count": 0,
                 "token_budget": token_budget,
                 "keyword_token_budget": _node_keyword_token_budget(node),
+                "token_budgets": _node_effective_token_budgets(node),
             }
         return {
             **base,
@@ -465,6 +497,7 @@ def _expand_node(
             "included_count": len(combined_results),
             "token_budget": token_budget,
             "keyword_token_budget": _node_keyword_token_budget(node),
+            "token_budgets": _node_effective_token_budgets(node),
         }
     elif node_type == "session_log":
         messages = [
@@ -581,27 +614,43 @@ def _node_sources(node: dict[str, Any]) -> list[str]:
     return [item for item in value if isinstance(item, str)]
 
 
-def _node_token_budget(node: dict[str, Any]) -> int:
+def _node_budget_enabled(node: dict[str, Any]) -> bool:
+    return node.get("budget_enabled") is not False
+
+
+def _node_token_budget(node: dict[str, Any]) -> int | None:
+    if not _node_budget_enabled(node):
+        return None
     value = node.get("token_budget", DEFAULT_RAG_TOKEN_BUDGET)
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else DEFAULT_RAG_TOKEN_BUDGET
 
 
-def _node_keyword_token_budget(node: dict[str, Any]) -> int:
+def _node_keyword_token_budget(node: dict[str, Any]) -> int | None:
+    if not _node_budget_enabled(node):
+        return None
     value = node.get("keyword_token_budget", DEFAULT_KEYWORD_TRIGGER_TOKEN_BUDGET)
     if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
         return value
     return DEFAULT_KEYWORD_TRIGGER_TOKEN_BUDGET
 
 
-def _node_token_budgets(node: dict[str, Any]) -> dict[str, int]:
+def _node_token_budgets(node: dict[str, Any]) -> dict[str, int | None]:
+    if not _node_budget_enabled(node):
+        return {key: None for key in DEFAULT_RAG_TYPE_TOKEN_BUDGETS}
     value = node.get("token_budgets")
     if not isinstance(value, dict):
         return {}
-    budgets: dict[str, int] = {}
+    budgets: dict[str, int | None] = {}
     for key, budget in value.items():
         if isinstance(key, str) and isinstance(budget, int) and not isinstance(budget, bool) and budget >= 0:
             budgets[key] = budget
     return budgets
+
+
+def _node_effective_token_budgets(node: dict[str, Any]) -> dict[str, int | None]:
+    if not _node_budget_enabled(node):
+        return {key: None for key in DEFAULT_RAG_TYPE_TOKEN_BUDGETS}
+    return {**DEFAULT_RAG_TYPE_TOKEN_BUDGETS, **_node_token_budgets(node)}
 
 
 def _character_rag_match_mode(metadata: dict[str, Any]) -> str:
