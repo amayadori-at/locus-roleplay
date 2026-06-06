@@ -38,6 +38,21 @@ def read_postprocess_job(vault: Vault, scenario_id: str, session_id: str, job_id
     return payload
 
 
+def find_active_postprocess_job(vault: Vault, scenario_id: str, session_id: str) -> dict[str, Any] | None:
+    _validate_ids(scenario_id, session_id)
+    directory = _postprocess_jobs_dir(vault, scenario_id, session_id)
+    if not directory.is_dir():
+        return None
+    for path in sorted(directory.glob("post_turn_*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and payload.get("status") in ACTIVE_POSTPROCESS_JOB_STATUSES:
+            return payload
+    return None
+
+
 def start_postprocess_job(
     vault: Vault,
     *,

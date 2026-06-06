@@ -199,7 +199,7 @@
               <span>{expansion.included ? `${expansion.content_tokens || 0} tokens` : expansion.skipped_reason}</span>
               {#if expansion.type === "rag"}
                 <span>
-                  sources: {expansion.sources?.join(", ") || "none"} / limit: {expansion.limit ?? "default"} / total: {expansion.token_budget ?? "default"} / keyword: {expansion.keyword_token_budget ?? "default"} / type: {budgetSummary(expansion.token_budgets)}
+                  sources: {expansion.sources?.join(", ") || "none"} / limit: {expansion.limit ?? "default"} / total: {expansion.token_budget ?? "default"} / keyword: {expansion.keyword_token_budget ?? "default"} / type: {budgetSummary(expansion.token_budgets)}{#if expansion.limits} / limits: {budgetSummary(expansion.limits)}{/if}
                 </span>
               {/if}
             </li>

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, cast
@@ -39,8 +40,15 @@ from app.loaders import (
     load_scenario,
     load_starting,
 )
+from app.memory_consolidation import (
+    MemoryConsolidationError,
+    apply_consolidation_suggestion,
+    list_consolidation_suggestions,
+    run_memory_consolidation,
+    update_consolidation_suggestion_status,
+)
 from app.model_client import ModelClientError, OpenAICompatibleClient
-from app.postprocess_jobs import read_postprocess_job, start_postprocess_job
+from app.postprocess_jobs import find_active_postprocess_job, read_postprocess_job, start_postprocess_job
 from app.prompt_preview import build_prompt_preview
 from app.prompt_graph import (
     has_start_prompt_graph,
@@ -95,6 +103,7 @@ from app.turn_loop import (
     _prompt_rag_debug,
     _prompt_rag_results,
     _prompt_recent_log_selection,
+    _now_iso,
     finalize_gm_turn,
     finalize_gm_turn_fast,
     prepare_gm_turn,
@@ -220,6 +229,7 @@ def handle_put(path: str, body: bytes, vault: Vault) -> ApiResponse:
         for handler in (
             _handle_persona_profile_put,
             _handle_scenario_content_put,
+            _handle_rag_memory_put,
             _handle_session_put,
         ):
             response = handler(route, vault, payload)
@@ -322,7 +332,7 @@ def _handle_scenario_content_get(route: list[str], query: dict[str, list[str]], 
     return None
 
 
-def _handle_rag_memory_get(route: list[str], _query: dict[str, list[str]], vault: Vault) -> ApiResponse | None:
+def _handle_rag_memory_get(route: list[str], query: dict[str, list[str]], vault: Vault) -> ApiResponse | None:
     if len(route) == 5 and route[:2] == ["api", "scenarios"] and route[3:5] == ["rag", "status"]:
         scenario_id = _validate_id(route[2], "scenario")
         return _json_response(_scenario_rag_status(vault, scenario_id))
@@ -331,7 +341,14 @@ def _handle_rag_memory_get(route: list[str], _query: dict[str, list[str]], vault
         return _json_response(_scenario_rag_vector_status(vault, scenario_id))
     if len(route) == 4 and route[:2] == ["api", "scenarios"] and route[3] == "memory":
         scenario_id = _validate_id(route[2], "scenario")
-        return _json_response(_scenario_memory_response(vault, scenario_id))
+        return _json_response(_scenario_memory_response(vault, scenario_id, session_id=_optional_query_id(query, "session_id")))
+    if len(route) == 5 and route[:2] == ["api", "scenarios"] and route[3:5] == ["memory", "consolidation-suggestions"]:
+        scenario_id = _validate_id(route[2], "scenario")
+        try:
+            suggestions = list_consolidation_suggestions(vault, scenario_id)
+        except MemoryConsolidationError as exc:
+            raise ApiBadRequest(str(exc)) from exc
+        return _json_response({"scenario_id": scenario_id, "suggestions": suggestions, "total": len(suggestions)})
     return None
 
 
@@ -422,7 +439,9 @@ def _handle_scenario_content_post(
 def _handle_rag_memory_post(
     route: list[str],
     vault: Vault,
-    _payload: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    state_model_client: ChatCompletionClient | None = None,
     **_clients: Any,
 ) -> ApiResponse | ApiStreamResponse | None:
     if len(route) == 5 and route[:2] == ["api", "scenarios"] and route[3:5] == ["rag", "rebuild"]:
@@ -431,6 +450,31 @@ def _handle_rag_memory_post(
     if len(route) == 5 and route[:2] == ["api", "scenarios"] and route[3:5] == ["rag", "rebuild-vectors"]:
         scenario_id = _validate_id(route[2], "scenario")
         return _json_response(_scenario_rag_rebuild_vectors_response(vault, scenario_id))
+    if len(route) == 5 and route[:2] == ["api", "scenarios"] and route[3:5] == ["memory", "consolidation-suggestions"]:
+        scenario_id = _validate_id(route[2], "scenario")
+        session_id = _require_id(payload, "session_id")
+        profile_id = _require_id(payload, "profile_id")
+        if state_model_client is None:
+            raise ApiBadRequest("state_model_client is required for memory consolidation")
+        try:
+            result = run_memory_consolidation(
+                vault,
+                scenario_id=scenario_id,
+                session_id=session_id,
+                profile_id=profile_id,
+                model_client=state_model_client,
+            )
+        except MemoryConsolidationError as exc:
+            raise ApiBadRequest(str(exc)) from exc
+        return _json_response(
+            {
+                "scenario_id": scenario_id,
+                "session_id": session_id,
+                "created_files": result.created_files,
+                "suggestions": result.suggestions,
+            },
+            status=201,
+        )
     return None
 
 
@@ -563,6 +607,108 @@ def _handle_scenario_content_delete(route: list[str], query: dict[str, list[str]
 
 
 _ALLOWED_MEMORY_KINDS: frozenset[str] = frozenset({"session_summaries", "extracted_facts", "unresolved_threads"})
+_ALLOWED_MEMORY_STATUSES: frozenset[str] = frozenset({"active", "resolved", "superseded", "stale", "archived"})
+
+
+def _handle_rag_memory_put(route: list[str], vault: Vault, payload: dict[str, Any]) -> ApiResponse | None:
+    # PUT /api/scenarios/{id}/memory/consolidation-suggestions/{suggestion_id}
+    if len(route) == 6 and route[:2] == ["api", "scenarios"] and route[3:5] == ["memory", "consolidation-suggestions"]:
+        scenario_id = _validate_id(route[2], "scenario")
+        suggestion_id = route[5]
+        try:
+            if payload.get("apply") is True:
+                result = apply_consolidation_suggestion(vault, scenario_id=scenario_id, suggestion_id=suggestion_id)
+                return _json_response(
+                    {
+                        "scenario_id": scenario_id,
+                        "suggestion": result.suggestion,
+                        "updated_memory_paths": result.updated_memory_paths,
+                        "stale_paths": result.stale_paths,
+                        "applied": True,
+                    }
+                )
+            status = payload.get("status")
+            if not isinstance(status, str):
+                raise ApiBadRequest("status must be a string or apply must be true")
+            suggestion = update_consolidation_suggestion_status(
+                vault,
+                scenario_id=scenario_id,
+                suggestion_id=suggestion_id,
+                status=status,
+            )
+        except MemoryConsolidationError as exc:
+            raise ApiBadRequest(str(exc)) from exc
+        return _json_response({"scenario_id": scenario_id, "suggestion": suggestion, "saved": True})
+    # PUT /api/scenarios/{id}/memory/{kind}/{memory_id}
+    if len(route) == 6 and route[:2] == ["api", "scenarios"] and route[3] == "memory":
+        scenario_id = _validate_id(route[2], "scenario")
+        kind = route[4]
+        memory_id = route[5]
+        return _json_response(_update_memory_metadata_response(vault, scenario_id, kind, memory_id, payload))
+    return None
+
+
+def _update_memory_metadata_response(
+    vault: Vault,
+    scenario_id: str,
+    kind: str,
+    memory_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    if kind not in _ALLOWED_MEMORY_KINDS:
+        raise ApiBadRequest(f"Unknown memory kind: {kind!r}")
+    if not re.match(r'^[A-Za-z0-9_-]+$', memory_id):
+        raise ApiBadRequest(f"Invalid memory_id: {memory_id!r}")
+    load_scenario(vault, scenario_id)
+    scenario_relative = f"memory/{kind}/{memory_id}.md"
+    vault_relative = f"rp/scenarios/{scenario_id}/{scenario_relative}"
+    path = vault.resolve(vault_relative)
+    if not path.is_file():
+        raise ApiBadRequest(f"Memory not found: {kind}/{memory_id}")
+
+    try:
+        document = vault.load_markdown(vault_relative)
+    except VaultFileError as exc:
+        raise ApiBadRequest(f"memory markdown is unreadable: {scenario_relative}") from exc
+
+    metadata = dict(document.frontmatter)
+    changed = False
+    if "rag_enabled" in payload:
+        rag_enabled = payload.get("rag_enabled")
+        if not isinstance(rag_enabled, bool):
+            raise ApiBadRequest("rag_enabled must be a boolean")
+        if rag_enabled:
+            if metadata.pop("rag", None) is not None:
+                changed = True
+        elif metadata.get("rag") is not False:
+            metadata["rag"] = False
+            changed = True
+    if "status" in payload:
+        status = payload.get("status")
+        if not isinstance(status, str) or status not in _ALLOWED_MEMORY_STATUSES:
+            raise ApiBadRequest(f"Invalid memory status: {status!r}")
+        if metadata.get("status") != status:
+            metadata["status"] = status
+            if status == "resolved" and not metadata.get("resolved_at"):
+                metadata["resolved_at"] = _utc_timestamp()
+            changed = True
+
+    if changed:
+        _atomic_write_text(path, _markdown_with_frontmatter(metadata, document.body))
+        from app.memory_summarizer import mark_rag_index_stale
+        mark_rag_index_stale(vault, scenario_id, [scenario_relative])
+
+    normalized = _normalize_memory_metadata(metadata)
+    return {
+        "scenario_id": scenario_id,
+        "kind": kind,
+        "memory_id": memory_id,
+        "path": scenario_relative,
+        "metadata": normalized,
+        "rag_enabled": normalized.get("rag") is not False,
+        "status": normalized["status"],
+        "saved": changed,
+    }
 
 
 def _handle_rag_memory_delete(route: list[str], _query: dict[str, list[str]], vault: Vault) -> ApiResponse | None:
@@ -834,11 +980,13 @@ def _session_summaries(vault: Vault, scenario_id: str) -> list[dict[str, Any]]:
 def _session_detail_response(vault: Vault, scenario_id: str, session_id: str) -> dict[str, Any]:
     metadata = read_session_metadata(vault, scenario_id, session_id)
     active_turn = find_active_turn_job(vault, scenario_id, session_id)
+    active_postprocess = find_active_postprocess_job(vault, scenario_id, session_id)
     return {
         "scenario_id": scenario_id,
         "session_id": session_id,
         "metadata": metadata,
         "pending_turn": _public_turn_job(active_turn) if active_turn is not None else None,
+        "pending_postprocess": _public_postprocess_job(active_postprocess) if active_postprocess is not None else None,
     }
 
 
@@ -910,6 +1058,21 @@ def _scenario_startings_response(vault: Vault, scenario_id: str) -> dict[str, An
     return {"scenario_id": scenario_id, "startings": startings}
 
 
+_BUSTUP_EXTENSION_ORDER: tuple[str, ...] = (".png", ".webp", ".jpg", ".jpeg", ".gif")
+
+
+def _resolve_bustup_asset(vault: Vault, scenario_id: str, image_dir: str) -> tuple[str, bool]:
+    """Resolve the bustup image for image_dir, trying allowed extensions in order.
+
+    Returns (extension_with_dot, exists). When no file exists, returns (".png", False)
+    so the path/URL keep the historical .png shape for backward compatibility.
+    """
+    for extension in _BUSTUP_EXTENSION_ORDER:
+        if image_asset_path(vault, scenario_id, image_dir, "bustup", extension).is_file():
+            return extension, True
+    return ".png", False
+
+
 def _scenario_character_bustups_response(vault: Vault, scenario_id: str) -> dict[str, Any]:
     load_scenario(vault, scenario_id)
     characters_path = vault.resolve(f"rp/scenarios/{scenario_id}/assets/characters.json")
@@ -931,7 +1094,7 @@ def _scenario_character_bustups_response(vault: Vault, scenario_id: str) -> dict
         name = config.get("name", character_id)
         short_name = config.get("short_name", config.get("shortName", name))
         aliases = _character_aliases(character_id, config, name, short_name)
-        bustup_path = image_asset_path(vault, scenario_id, image_dir, "bustup")
+        bustup_ext, bustup_exists = _resolve_bustup_asset(vault, scenario_id, image_dir)
         characters.append(
             {
                 "id": character_id,
@@ -939,9 +1102,9 @@ def _scenario_character_bustups_response(vault: Vault, scenario_id: str) -> dict
                 "short_name": short_name if isinstance(short_name, str) else character_id,
                 "aliases": aliases,
                 "image_dir": image_dir,
-                "bustup_path": f"{image_dir}/bustup.png",
-                "bustup_url": image_asset_url(scenario_id, image_dir, "bustup"),
-                "bustup_exists": bustup_path.is_file(),
+                "bustup_path": f"{image_dir}/bustup{bustup_ext}",
+                "bustup_url": image_asset_url(scenario_id, image_dir, "bustup", bustup_ext),
+                "bustup_exists": bustup_exists,
             }
         )
     return {"scenario_id": scenario_id, "characters": characters}
@@ -1297,7 +1460,7 @@ def _scenario_rag_rebuild_response(vault: Vault, scenario_id: str) -> dict[str, 
     }
 
 
-def _scenario_memory_response(vault: Vault, scenario_id: str) -> dict[str, Any]:
+def _scenario_memory_response(vault: Vault, scenario_id: str, *, session_id: str | None = None) -> dict[str, Any]:
     load_scenario(vault, scenario_id)
     base = vault.resolve(f"rp/scenarios/{scenario_id}")
     memory_root = base / "memory"
@@ -1320,21 +1483,31 @@ def _scenario_memory_response(vault: Vault, scenario_id: str) -> dict[str, Any]:
             except VaultFileError as exc:
                 raise ApiBadRequest(f"memory markdown is unreadable: {scenario_relative}") from exc
             metadata = dict(document.frontmatter)
+            if session_id is not None and metadata.get("session_id") != session_id:
+                continue
             body = document.body.strip()
             stat = path.stat()
+            normalized_metadata = _normalize_memory_metadata(metadata)
             groups[kind].append(
                 {
                     "path": scenario_relative,
                     "kind": kind,
-                    "memory_kind": metadata.get("memory_kind") or _memory_kind_from_folder(kind),
-                    "title": _memory_title(path, metadata),
-                    "metadata": metadata,
+                    "memory_kind": normalized_metadata.get("memory_kind") or _memory_kind_from_folder(kind),
+                    "title": _memory_title(path, normalized_metadata),
+                    "metadata": normalized_metadata,
                     "content": body,
                     "excerpt": _timeline_excerpt(body, limit=120),
                     "updated_at": stat.st_mtime,
-                    "rag_enabled": metadata.get("rag") is not False,
+                    "rag_enabled": normalized_metadata.get("rag") is not False,
                     "in_index": scenario_relative in indexed_paths,
                     "stale_created": scenario_relative in stale_created_paths,
+                    "status": normalized_metadata["status"],
+                    "source": normalized_metadata["source"],
+                    "confidence": normalized_metadata["confidence"],
+                    "last_seen_turn": normalized_metadata.get("last_seen_turn"),
+                    "characters": normalized_metadata.get("characters", []),
+                    "locations": normalized_metadata.get("locations", []),
+                    "topics": normalized_metadata.get("topics", []),
                 }
             )
 
@@ -1343,10 +1516,76 @@ def _scenario_memory_response(vault: Vault, scenario_id: str) -> dict[str, Any]:
 
     return {
         "scenario_id": scenario_id,
+        **({"session_id": session_id} if session_id is not None else {}),
         "groups": groups,
         "counts": {kind: len(items) for kind, items in groups.items()},
         "total": sum(len(items) for items in groups.values()),
     }
+
+
+def _normalize_memory_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(metadata)
+    status = normalized.get("status")
+    if not isinstance(status, str) or not status.strip():
+        normalized["status"] = "active"
+    source = normalized.get("source")
+    if not isinstance(source, str) or not source.strip():
+        normalized["source"] = "unknown"
+    confidence = normalized.get("confidence")
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or confidence < 0 or confidence > 1:
+        normalized["confidence"] = None
+    for field in ("supersedes", "superseded_by", "characters", "locations", "topics"):
+        value = normalized.get(field)
+        if not isinstance(value, list):
+            normalized[field] = []
+        else:
+            normalized[field] = [item for item in value if isinstance(item, str)]
+    return normalized
+
+
+def _markdown_with_frontmatter(frontmatter: dict[str, Any], body: str) -> str:
+    return "---\n" + "\n".join(_yaml_lines(frontmatter)) + "\n---\n\n" + body.strip() + "\n"
+
+
+def _yaml_lines(data: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    for key, value in data.items():
+        if isinstance(value, list):
+            lines.append(f"{key}:")
+            for item in value:
+                lines.append(f"  - {_yaml_scalar(item)}")
+        else:
+            lines.append(f"{key}: {_yaml_scalar(value)}")
+    return lines
+
+
+def _yaml_scalar(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, float):
+        return str(value)
+    text = str(value)
+    if not text:
+        return '""'
+    if re.fullmatch(r"[A-Za-z0-9_./:+-]+", text):
+        return text
+    return json.dumps(text, ensure_ascii=False)
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    temp_path = path.with_name(f".{path.name}.tmp")
+    try:
+        temp_path.write_text(content, encoding="utf-8")
+        temp_path.replace(path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+def _utc_timestamp() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def _rag_index_source_paths(index: dict[str, Any] | None) -> set[str]:
@@ -1586,6 +1825,12 @@ def _update_session_settings_response(
     bookmarked_turns = payload.get("bookmarked_turns")
     if bookmarked_turns is not None:
         bookmarked_turns = _validate_bookmarked_turns(bookmarked_turns)
+    rp_profile_id = _optional_id(payload, "rp_profile_id")
+    if rp_profile_id is not None:
+        load_profile(vault, rp_profile_id)
+    summary_profile_id = _optional_id(payload, "summary_profile_id")
+    if summary_profile_id is not None:
+        load_profile(vault, summary_profile_id)
 
     updated = dict(metadata)
     if session_note is not None:
@@ -1598,6 +1843,10 @@ def _update_session_settings_response(
         updated["display_name"] = display_name
     if bookmarked_turns is not None:
         updated["bookmarked_turns"] = bookmarked_turns
+    if rp_profile_id is not None:
+        updated["rp_profile_id"] = rp_profile_id
+    if summary_profile_id is not None:
+        updated["summary_profile_id"] = summary_profile_id
     write_session_metadata(vault, scenario_id, session_id, updated)
     return _json_response({"session": updated})
 
@@ -1748,6 +1997,9 @@ def _turn_response(
     async_requested = payload.get("async", False)
     if not isinstance(async_requested, bool):
         raise ApiBadRequest("async must be a boolean")
+    defer_postprocess = payload.get("defer_postprocess", False)
+    if not isinstance(defer_postprocess, bool):
+        raise ApiBadRequest("defer_postprocess must be a boolean")
     if stream and async_requested:
         raise ApiBadRequest("stream and async cannot both be true")
     if async_requested:
@@ -1763,6 +2015,7 @@ def _turn_response(
             user_message=user_message,
             model_client=client,
             state_model_client=state_client,
+            defer_postprocess=defer_postprocess,
         )
         return _json_response({"turn_job": _public_turn_job(turn_job)}, status=202)
     if stream:
@@ -1787,6 +2040,40 @@ def _turn_response(
 
     client = model_client or OpenAICompatibleClient()
     state_client = state_model_client if state_model_client is not None else client
+    if defer_postprocess:
+        prepared = prepare_gm_turn(
+            vault,
+            scenario_id=scenario_id,
+            session_id=session_id,
+            user_message=user_message,
+        )
+        started = time.perf_counter()
+        completion = client.create_chat_completion(prepared.profile, prepared.messages)
+        response_duration_ms = _duration_ms(started)
+        result = finalize_gm_turn_fast(
+            vault,
+            scenario_id=scenario_id,
+            session_id=session_id,
+            user_message=user_message,
+            assistant_content=completion.content,
+            prepared=prepared,
+            response_duration_ms=response_duration_ms,
+        )
+        postprocess_job = start_postprocess_job(
+            vault,
+            scenario_id=scenario_id,
+            session_id=session_id,
+            user_message=user_message,
+            assistant_content=completion.content,
+            prepared=prepared,
+            state_model_client=state_client,
+        )
+        return _json_response(
+            {
+                "turn": turn_result_payload(result),
+                "postprocess_job": _public_postprocess_job(postprocess_job),
+            }
+        )
     result = run_gm_turn(
         vault,
         scenario_id=scenario_id,
@@ -1861,12 +2148,14 @@ def _turn_stream_response(
                 user_message=user_message,
             )
             chunks: list[str] = []
+            started = time.perf_counter()
             for delta in model_client.create_chat_completion_stream(prepared.profile, prepared.messages):
                 if not delta:
                     continue
                 chunks.append(delta)
                 yield _sse_event("delta", {"delta": delta})
             assistant_content = "".join(chunks)
+            response_duration_ms = _duration_ms(started)
             result = finalize_gm_turn_fast(
                 vault,
                 scenario_id=scenario_id,
@@ -1874,6 +2163,7 @@ def _turn_stream_response(
                 user_message=user_message,
                 assistant_content=assistant_content,
                 prepared=prepared,
+                response_duration_ms=response_duration_ms,
             )
             yield _sse_event("final", {"turn": turn_result_payload(result)})
             postprocess_job = start_postprocess_job(
@@ -2147,6 +2437,11 @@ def _sse_event(event: str, payload: dict[str, Any]) -> bytes:
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return f"event: {event}\ndata: {data}\n\n".encode("utf-8")
 
+
+def _duration_ms(started: float) -> int:
+    return max(0, round((time.perf_counter() - started) * 1000))
+
+
 def _update_session_message_response(vault: Vault, scenario_id: str, session_id: str, turn: int, role: str, payload: dict[str, Any]) -> dict[str, Any]:
     content = payload.get("content")
     if not isinstance(content, str):
@@ -2233,6 +2528,11 @@ def _update_session_message_candidate_response(vault: Vault, scenario_id: str, s
         "content": candidates[index],
         "candidates": candidates,
     }
+    candidate_durations = target_entry.get("candidate_response_durations_ms")
+    if isinstance(candidate_durations, list):
+        updates["candidate_response_durations_ms"] = candidate_durations
+        if index < len(candidate_durations) and isinstance(candidate_durations[index], int):
+            updates["response_duration_ms"] = candidate_durations[index]
     updated = update_session_log_entry(vault, scenario_id, session_id, turn, "assistant", updates)
     return {
         "scenario_id": scenario_id,
@@ -2291,7 +2591,7 @@ def _regenerate_session_message_response(
     )
     _write_regenerate_latest_prompt(vault, scenario_id, session_id, turn, prepared, target.state_source)
 
-    def _on_success(content: str, token_usage: dict[str, int]) -> bytes:
+    def _on_success(content: str, token_usage: dict[str, int], response_duration_ms: int) -> bytes:
         updated, state_info, state_restored = _append_regenerated_candidate(
             vault,
             scenario_id=scenario_id,
@@ -2305,6 +2605,7 @@ def _regenerate_session_message_response(
             user_message=target.user_message,
             assistant_content=content,
             state_model_client=state_client,
+            response_duration_ms=response_duration_ms,
         )
 
         return json.dumps(
@@ -2315,6 +2616,7 @@ def _regenerate_session_message_response(
                 "role": "assistant",
                 "entry": updated,
                 "token_usage": token_usage,
+                "response_duration_ms": response_duration_ms,
                 "state_source": target.state_source,
                 "state_candidate": state_info,
                 "state_restored": state_restored,
@@ -2327,23 +2629,26 @@ def _regenerate_session_message_response(
         def _generate() -> Iterable[bytes]:
             chunks: list[str] = []
             try:
+                started = time.perf_counter()
                 for chunk in model_client.create_chat_completion_stream(prepared.profile, prepared.messages):
                     if not chunk:
                         continue
                     chunks.append(chunk)
                     yield _sse_event("delta", {"delta": chunk})
                 final_content = "".join(chunks)
-                yield _sse_event("final", json.loads(_on_success(final_content, {})))
+                yield _sse_event("final", json.loads(_on_success(final_content, {}, _duration_ms(started))))
             except Exception as exc:
                 yield _sse_event("error", {"error": type(exc).__name__, "message": str(exc)})
 
         return ApiStreamResponse(status=200, content_type="text/event-stream; charset=utf-8", events=_generate())
     else:
+        started = time.perf_counter()
         result = model_client.create_chat_completion(prepared.profile, prepared.messages)
+        response_duration_ms = _duration_ms(started)
         return ApiResponse(
             status=200,
             content_type="application/json; charset=utf-8",
-            body=_on_success(result.content, getattr(result, "token_usage", {})),
+            body=_on_success(result.content, getattr(result, "token_usage", {}), response_duration_ms),
         )
 
 
@@ -2439,6 +2744,7 @@ def _append_regenerated_candidate(
     user_message: str,
     assistant_content: str,
     state_model_client: ChatCompletionClient | None,
+    response_duration_ms: int,
 ) -> tuple[dict[str, Any], dict[str, Any], bool]:
     assistant_content = _strip_reasoning_blocks(assistant_content)
     raw_candidates = target_entry.get("candidates", [])
@@ -2459,6 +2765,8 @@ def _append_regenerated_candidate(
     )
     candidates.append(assistant_content)
     active_index = len(candidates) - 1
+    candidate_durations = _candidate_response_durations(target_entry, len(candidates) - 1)
+    candidate_durations.append(response_duration_ms)
     state_info = _state_info_for_regenerated_candidate(
         vault,
         scenario_id=scenario_id,
@@ -2493,9 +2801,23 @@ def _append_regenerated_candidate(
             "candidates": candidates,
             "active_candidate_index": active_index,
             "candidate_states": candidate_states,
+            "candidate_response_durations_ms": candidate_durations,
+            "response_duration_ms": response_duration_ms,
         },
     )
     return updated, state_info, state_restored
+
+
+def _candidate_response_durations(target_entry: dict[str, Any], candidate_count: int) -> list[int | None]:
+    existing = target_entry.get("candidate_response_durations_ms")
+    if isinstance(existing, list):
+        durations = [item if isinstance(item, int) and item >= 0 else None for item in existing[:candidate_count]]
+    else:
+        duration = target_entry.get("response_duration_ms")
+        durations = [duration if isinstance(duration, int) and duration >= 0 else None] if candidate_count else []
+    while len(durations) < candidate_count:
+        durations.append(None)
+    return durations
 
 
 def _candidate_states_for_existing_candidates(
@@ -2621,10 +2943,6 @@ def _continue_session_message_response(
     if latest_assistant_turn != turn:
         raise ApiBadRequest("Only the latest assistant message can be continued")
 
-    base_content = target_entry.get("content", "")
-    if not isinstance(base_content, str):
-        base_content = ""
-
     recent_log_override = [
         entry
         for entry in entries
@@ -2646,36 +2964,44 @@ def _continue_session_message_response(
         recent_log_override=recent_log_override,
     )
 
-    def _on_success(appended_content: str, token_usage: dict[str, int]) -> bytes:
+    def _on_success(appended_content: str, token_usage: dict[str, int], response_duration_ms: int) -> bytes:
         clean_appended_content = _remove_reasoning_blocks(appended_content)
-        new_content = _remove_reasoning_blocks(base_content) + clean_appended_content
-        updates: dict[str, Any] = {
-            "content": new_content,
-            "segments": [
-                segment_payload(segment)
-                for segment in parse_image_markers(new_content, scenario=prepared.scenario, vault=vault)
-            ],
-        }
-        candidates = target_entry.get("candidates")
-        if isinstance(candidates, list) and candidates:
-            updated_candidates = list(candidates)
-            active_index = target_entry.get("active_candidate_index", 0)
-            if not isinstance(active_index, int) or active_index < 0 or active_index >= len(updated_candidates):
-                active_index = 0
-            updated_candidates[active_index] = new_content
-            updates["candidates"] = updated_candidates
-            updates["active_candidate_index"] = active_index
-        updated = update_session_log_entry(vault, scenario_id, session_id, turn, "assistant", updates)
+        metadata = read_session_metadata(vault, scenario_id, session_id)
+        current_turn_count = metadata.get("turn_count", 0)
+        if not isinstance(current_turn_count, int) or current_turn_count < 0:
+            raise ApiBadRequest("Session metadata turn_count must be a non-negative integer")
+        continued_turn = max(current_turn_count, turn) + 1
+        entry = append_session_log(
+            vault,
+            scenario_id,
+            session_id,
+            turn=continued_turn,
+            role="assistant",
+            content=clean_appended_content,
+            extra={
+                "continued_from_turn": turn,
+                "response_duration_ms": response_duration_ms,
+                "segments": [
+                    segment_payload(segment)
+                    for segment in parse_image_markers(clean_appended_content, scenario=prepared.scenario, vault=vault)
+                ],
+            },
+        )
+        metadata["turn_count"] = continued_turn
+        metadata["updated_at"] = _now_iso()
+        write_session_metadata(vault, scenario_id, session_id, metadata)
 
         return json.dumps(
             {
                 "scenario_id": scenario_id,
                 "session_id": session_id,
-                "turn": turn,
+                "turn": continued_turn,
+                "continued_from_turn": turn,
                 "role": "assistant",
                 "appended_content": clean_appended_content,
-                "entry": updated,
+                "entry": entry,
                 "token_usage": token_usage,
+                "response_duration_ms": response_duration_ms,
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -2685,23 +3011,26 @@ def _continue_session_message_response(
         def _generate() -> Iterable[bytes]:
             chunks: list[str] = []
             try:
+                started = time.perf_counter()
                 for chunk in model_client.create_chat_completion_stream(prepared.profile, prepared.messages):
                     if not chunk:
                         continue
                     chunks.append(chunk)
                     yield _sse_event("delta", {"delta": chunk})
                 appended_content = "".join(chunks)
-                yield _sse_event("final", json.loads(_on_success(appended_content, {})))
+                yield _sse_event("final", json.loads(_on_success(appended_content, {}, _duration_ms(started))))
             except Exception as exc:
                 yield _sse_event("error", {"error": type(exc).__name__, "message": str(exc)})
 
         return ApiStreamResponse(status=200, content_type="text/event-stream; charset=utf-8", events=_generate())
 
+    started = time.perf_counter()
     result = model_client.create_chat_completion(prepared.profile, prepared.messages)
+    response_duration_ms = _duration_ms(started)
     return ApiResponse(
         status=200,
         content_type="application/json; charset=utf-8",
-        body=_on_success(result.content, getattr(result, "token_usage", {})),
+        body=_on_success(result.content, getattr(result, "token_usage", {}), response_duration_ms),
     )
 
 

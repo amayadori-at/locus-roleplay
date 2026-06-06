@@ -345,9 +345,62 @@ export function getScenarioRagStatus(scenarioId) {
 
 /**
  * @param {string} scenarioId
+ * @param {string} [sessionId]
  */
-export function listScenarioMemory(scenarioId) {
-  return apiJson(`/api/scenarios/${encodeURIComponent(scenarioId)}/memory`);
+export function listScenarioMemory(scenarioId, sessionId) {
+  const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+  return apiJson(`/api/scenarios/${encodeURIComponent(scenarioId)}/memory${query}`);
+}
+
+/**
+ * @param {string} scenarioId
+ * @param {string} kind
+ * @param {string} memoryId
+ * @param {{ rag_enabled?: boolean, status?: string }} patch
+ */
+export function updateMemoryMetadata(scenarioId, kind, memoryId, patch) {
+  return apiPut(
+    `/api/scenarios/${encodeURIComponent(scenarioId)}/memory/${encodeURIComponent(kind)}/${encodeURIComponent(memoryId)}`,
+    patch
+  );
+}
+
+/**
+ * @param {string} scenarioId
+ */
+export function listMemoryConsolidationSuggestions(scenarioId) {
+  return apiJson(`/api/scenarios/${encodeURIComponent(scenarioId)}/memory/consolidation-suggestions`);
+}
+
+/**
+ * @param {string} scenarioId
+ * @param {{ session_id: string, profile_id: string }} payload
+ */
+export function createMemoryConsolidationSuggestions(scenarioId, payload) {
+  return apiPost(`/api/scenarios/${encodeURIComponent(scenarioId)}/memory/consolidation-suggestions`, payload);
+}
+
+/**
+ * @param {string} scenarioId
+ * @param {string} suggestionId
+ * @param {string} status
+ */
+export function updateMemoryConsolidationSuggestionStatus(scenarioId, suggestionId, status) {
+  return apiPut(
+    `/api/scenarios/${encodeURIComponent(scenarioId)}/memory/consolidation-suggestions/${encodeURIComponent(suggestionId)}`,
+    { status }
+  );
+}
+
+/**
+ * @param {string} scenarioId
+ * @param {string} suggestionId
+ */
+export function applyMemoryConsolidationSuggestion(scenarioId, suggestionId) {
+  return apiPut(
+    `/api/scenarios/${encodeURIComponent(scenarioId)}/memory/consolidation-suggestions/${encodeURIComponent(suggestionId)}`,
+    { apply: true }
+  );
 }
 
 /**
@@ -426,6 +479,14 @@ export function deleteSession(scenarioId, sessionId) {
   return apiJson(`/api/scenarios/${encodeURIComponent(scenarioId)}/sessions/${encodeURIComponent(sessionId)}`, {
     method: "DELETE"
   });
+}
+
+/**
+ * @param {string} scenarioId
+ * @param {string} sessionId
+ */
+export function getSessionDetail(scenarioId, sessionId) {
+  return apiJson(`/api/scenarios/${encodeURIComponent(scenarioId)}/sessions/${encodeURIComponent(sessionId)}`);
 }
 
 /**
@@ -517,7 +578,18 @@ export function getPostprocessJob(scenarioId, sessionId, jobId) {
 /**
  * @param {string} scenarioId
  * @param {string} sessionId
- * @param {{ user_note?: string, session_note?: string, scene_note?: string, display_name?: string, bookmarked_turns?: number[] }} payload
+ * @param {string} turnId
+ */
+export function getTurnJob(scenarioId, sessionId, turnId) {
+  return apiJson(
+    `/api/scenarios/${encodeURIComponent(scenarioId)}/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}`
+  );
+}
+
+/**
+ * @param {string} scenarioId
+ * @param {string} sessionId
+ * @param {{ user_note?: string, session_note?: string, scene_note?: string, display_name?: string, bookmarked_turns?: number[], rp_profile_id?: string, summary_profile_id?: string }} payload
  */
 export function updateSessionSettings(scenarioId, sessionId, payload) {
   return apiJson(
@@ -533,7 +605,7 @@ export function updateSessionSettings(scenarioId, sessionId, payload) {
  * @param {string} scenarioId
  * @param {string} sessionId
  * @param {string} userMessage
- * @param {{ signal?: AbortSignal, stream?: boolean }} [options]
+ * @param {{ signal?: AbortSignal, stream?: boolean, async?: boolean, deferPostprocess?: boolean }} [options]
  */
 export function sendTurn(scenarioId, sessionId, userMessage, options = {}) {
   return apiJson(
@@ -541,7 +613,12 @@ export function sendTurn(scenarioId, sessionId, userMessage, options = {}) {
     {
       method: "POST",
       signal: options.signal,
-      body: JSON.stringify({ user_message: userMessage, stream: Boolean(options.stream) })
+      body: JSON.stringify({
+        user_message: userMessage,
+        stream: Boolean(options.stream),
+        async: Boolean(options.async),
+        defer_postprocess: Boolean(options.deferPostprocess)
+      })
     }
   );
 }

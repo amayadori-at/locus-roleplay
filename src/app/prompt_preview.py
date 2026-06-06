@@ -16,10 +16,11 @@ from app.rag import (
     keyword_triggered_lore_results,
     load_scenario_file,
     retrieve_context,
+    session_memory_results,
 )
 from app.reasoning import sanitize_log_entries
 from app.scenario_settings import read_scenario_settings
-from app.state_session import read_current_state, read_session_log, read_session_metadata, read_session_state
+from app.state_session import ancestor_session_ids, read_current_state, read_session_log, read_session_metadata, read_session_state
 from app.token_usage import estimate_prompt_token_usage
 from app.vault import Vault, VaultError
 
@@ -116,6 +117,8 @@ def compose_prompt_graph(
 
     active_mods: list[str] = _safe_string_list(metadata.get("active_mods"))
     pinned_characters: list[str] = _safe_string_list(metadata.get("pinned_characters"))
+    allowed_memory_session_ids = set(ancestor_session_ids(vault, scenario_id, session_id)) if session_id else None
+    current_turn = _metadata_turn_count(metadata)
 
     base_messages, _base_expansions = _compose_messages_from_graph(
         vault,
@@ -129,6 +132,8 @@ def compose_prompt_graph(
         user_message=user_message,
         active_mods=active_mods,
         pinned_characters=pinned_characters,
+        allowed_memory_session_ids=allowed_memory_session_ids,
+        current_turn=current_turn,
     )
     recent_log, recent_log_selection = _select_recent_log_for_context(
         raw_recent_log,
@@ -148,6 +153,8 @@ def compose_prompt_graph(
         user_message=user_message,
         active_mods=active_mods,
         pinned_characters=pinned_characters,
+        allowed_memory_session_ids=allowed_memory_session_ids,
+        current_turn=current_turn,
     )
 
     token_usage = estimate_prompt_token_usage(messages, profile.data)
@@ -204,9 +211,11 @@ def _compose_messages_from_graph(
     user_message: str,
     active_mods: list[str],
     pinned_characters: list[str],
+    allowed_memory_session_ids: set[str] | None = None,
+    current_turn: int | None = None,
 ) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
-    messages: list[dict[str, str]] = []
     system_sections: list[str] = []
+    conversation_messages: list[dict[str, str]] = []
     expansions: list[dict[str, Any]] = []
 
     for node in graph["nodes"]:
@@ -222,6 +231,8 @@ def _compose_messages_from_graph(
             user_message=user_message,
             active_mods=active_mods,
             pinned_characters=pinned_characters,
+            allowed_memory_session_ids=allowed_memory_session_ids,
+            current_turn=current_turn,
         )
         expansions.append(expansion)
         if not expansion["included"]:
@@ -237,12 +248,14 @@ def _compose_messages_from_graph(
                 item_role = item.get("role")
                 item_content = item.get("content")
                 if is_conversation_role(item_role) and isinstance(item_content, str) and item_content:
-                    messages.append({"role": item_role, "content": item_content})
+                    conversation_messages.append({"role": item_role, "content": item_content})
         elif role in {"user", "assistant"} and content:
-            messages.append({"role": role, "content": content})
+            conversation_messages.append({"role": role, "content": content})
 
+    messages: list[dict[str, str]] = []
     if system_sections:
-        messages.insert(0, {"role": "system", "content": "\n\n".join(system_sections)})
+        messages.append({"role": "system", "content": "\n\n".join(system_sections)})
+    messages.extend(conversation_messages)
 
     return messages, expansions
 
@@ -372,6 +385,8 @@ def _expand_node(
     user_message: str,
     active_mods: list[str] | None = None,
     pinned_characters: list[str] | None = None,
+    allowed_memory_session_ids: set[str] | None = None,
+    current_turn: int | None = None,
 ) -> dict[str, Any]:
     node_id = node["id"]
     node_type = node["type"]
@@ -430,7 +445,19 @@ def _expand_node(
         query = build_rag_query(user_message=user_message, recent_log=recent_log, state=state)
         sources = _node_sources(node)
         limit = _node_limit(node)
+        limits = _node_limits(node)
         token_budget = _node_token_budget(node)
+        session_memory: list[dict[str, Any]] = []
+        if "memory" in sources and allowed_memory_session_ids:
+            session_memory = session_memory_results(
+                vault,
+                scenario.id,
+                allowed_session_ids=allowed_memory_session_ids,
+                exclude_paths=exclude_paths if exclude_paths else None,
+            )
+        session_memory_paths = {
+            result["source_path"] for result in session_memory if isinstance(result.get("source_path"), str)
+        }
         keyword_results: list[dict[str, Any]] = []
         keyword_warnings: list[str] = []
         if "lore" in sources:
@@ -442,14 +469,18 @@ def _expand_node(
                 exclude_paths=exclude_paths if exclude_paths else None,
             )
         keyword_paths = {result["source_path"] for result in keyword_results if isinstance(result.get("source_path"), str)}
+        retrieval_exclude_paths = exclude_paths | keyword_paths | session_memory_paths
         results = retrieve_context(
             vault,
             scenario_id=scenario.id,
             query=query,
             limit=limit,
             sources=sources,
-            exclude_paths=(exclude_paths | keyword_paths) if exclude_paths or keyword_paths else None,
+            exclude_paths=retrieval_exclude_paths if retrieval_exclude_paths else None,
             character_match_mode=_character_rag_match_mode(scenario.metadata),
+            limits=limits,
+            allowed_session_ids=allowed_memory_session_ids,
+            current_turn=current_turn,
         )
         keyword_budgeted_results = budget_rag_results(
             keyword_results,
@@ -457,19 +488,20 @@ def _expand_node(
             token_budgets={"lore": _node_keyword_token_budget(node)},
         )
         budgeted_results = budget_rag_results(
-            results,
+            session_memory + results,
             token_budget=token_budget,
             token_budgets=_node_token_budgets(node),
         )
         combined_results = keyword_budgeted_results + budgeted_results
         content = format_rag_results(combined_results)
         if not content:
-            reason = "rag_budget_exhausted" if results else "no_rag_results"
+            reason = "rag_budget_exhausted" if results or session_memory else "no_rag_results"
             return {
                 **base,
                 "included": False,
                 "skipped_reason": reason,
                 "results": [],
+                "session_memory_results": [],
                 "keyword_results": [],
                 "keyword_warnings": keyword_warnings,
                 "query": query,
@@ -480,6 +512,7 @@ def _expand_node(
                 "token_budget": token_budget,
                 "keyword_token_budget": _node_keyword_token_budget(node),
                 "token_budgets": _node_effective_token_budgets(node),
+                **({"limits": limits} if limits else {}),
             }
         return {
             **base,
@@ -488,6 +521,7 @@ def _expand_node(
                 "prompt_tokens"
             ],
             "results": combined_results,
+            "session_memory_results": session_memory,
             "keyword_results": keyword_budgeted_results,
             "keyword_warnings": keyword_warnings,
             "query": query,
@@ -498,6 +532,7 @@ def _expand_node(
             "token_budget": token_budget,
             "keyword_token_budget": _node_keyword_token_budget(node),
             "token_budgets": _node_effective_token_budgets(node),
+            **({"limits": limits} if limits else {}),
         }
     elif node_type == "session_log":
         messages = [
@@ -605,6 +640,18 @@ def _condition_matches(condition: object, scenario: Scenario) -> bool:
 def _node_limit(node: dict[str, Any]) -> int:
     value = node.get("limit", 6)
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 6
+
+
+def _node_limits(node: dict[str, Any]) -> dict[str, int] | None:
+    """Optional per-type count limits. Returns None when unset/invalid (shared limit applies)."""
+    value = node.get("limits")
+    if not isinstance(value, dict):
+        return None
+    limits: dict[str, int] = {}
+    for key, cap in value.items():
+        if isinstance(key, str) and key.strip() and isinstance(cap, int) and not isinstance(cap, bool) and cap >= 0:
+            limits[key] = cap
+    return limits or None
 
 
 def _node_sources(node: dict[str, Any]) -> list[str]:
@@ -726,6 +773,13 @@ def _metadata_string(metadata: dict[str, Any], field: str) -> str:
 def _metadata_text(metadata: dict[str, Any], field: str) -> str:
     value = metadata.get(field)
     return value if isinstance(value, str) else ""
+
+
+def _metadata_turn_count(metadata: dict[str, Any]) -> int | None:
+    value = metadata.get("turn_count")
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
 
 
 def _resolved_session_note(metadata: dict[str, Any], session_note: str | None, legacy_user_note: str = "") -> str:

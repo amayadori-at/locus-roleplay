@@ -1,6 +1,7 @@
 export const RAG_SOURCE_OPTIONS = ["memory", "lore", "characters"];
 export const RAG_TYPE_BUDGET_KEYS = ["memory", "lore", "character"];
-export const TYPE_SCOPED_FIELDS = ["path", "source", "limit", "budget_enabled", "token_budget", "keyword_token_budget", "token_budgets"];
+export const RAG_TYPE_LIMIT_KEYS = ["memory", "lore", "character"];
+export const TYPE_SCOPED_FIELDS = ["path", "source", "limit", "limits", "budget_enabled", "token_budget", "keyword_token_budget", "token_budgets"];
 export const DEFAULT_SESSION_LOG_TOKEN_BUDGET = 12000;
 
 export const DEFAULT_RAG_NODE_FIELDS = Object.freeze({
@@ -137,6 +138,28 @@ export function setRagTypeBudget(node, key, value) {
     delete current[key];
   }
   return Object.keys(current).length ? { ...node, token_budgets: current } : withoutField(node, "token_budgets");
+}
+
+/**
+ * Set a per-type count limit on a rag node. Counts are non-negative integers.
+ * Empty/invalid value removes that type; emptying all removes the `limits` field
+ * (so the node falls back to the shared `limit`).
+ * @param {Record<string, any>} node
+ * @param {string} key
+ * @param {number | undefined} value
+ * @returns {Record<string, any>}
+ */
+export function setRagTypeLimit(node, key, value) {
+  if (!RAG_TYPE_LIMIT_KEYS.includes(key)) return node;
+  const current = typeof node.limits === "object" && node.limits !== null && !Array.isArray(node.limits)
+    ? { ...node.limits }
+    : {};
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0) {
+    current[key] = value;
+  } else {
+    delete current[key];
+  }
+  return Object.keys(current).length ? { ...node, limits: current } : withoutField(node, "limits");
 }
 
 /**
@@ -452,7 +475,10 @@ export function nodeSubText(node) {
   if (node.type === "file") return node.path || "";
   if (node.type === "rag") {
     const srcs = normalizedRagSources(node);
-    return srcs.length ? srcs.join(", ") : "all sources";
+    const base = srcs.length ? srcs.join(", ") : "all sources";
+    const hasLimits =
+      node.limits && typeof node.limits === "object" && !Array.isArray(node.limits) && Object.keys(node.limits).length > 0;
+    return hasLimits ? `${base} · type limits` : base;
   }
   if (node.type === "session_log" && node.token_budget) {
     return `runtime · ${node.token_budget}tok`;

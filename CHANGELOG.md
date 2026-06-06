@@ -1,5 +1,41 @@
 # CHANGELOG
 
+## v1.2.4 (2026-06-06)
+
+### 新機能
+
+- Memory 整理支援を追加 — 生成済み Memory の重複・解決済み項目・古くなった内容を見直すための提案を作成し、確認してから適用できるようになった
+- Session 画面から Memory を確認・管理できるように改善 — 現在のセッションに関係する Memory を表示し、本文を確認しながら status を変更できる
+- シナリオエディタの Knowledge タブを拡張 — Memory を種類・状態・由来・RAG対象・キャラクター・場所・トピックで絞り込み、RAG対象の切り替えや resolved 化を画面上で行える
+
+### 既存機能の改善
+
+- RAG が現在のセッション履歴に紐づく Memory をより安定して参照するよう改善 — 別セッション由来の Memory が混ざりにくくなり、同一セッション内の重要な出来事を拾いやすくなった
+- Memory の status / importance / last_seen などのメタデータを RAG 評価に反映 — resolved / superseded / archived の Memory は通常検索から除外され、重要度や直近性が検索結果に反映される
+- RAG node で memory / lore / character ごとの件数上限を設定可能に — 取得件数を種類別に調整し、特定種類だけが検索結果を占有しにくくなった
+- 最新送信 Prompt の確認画面を改善 — 実際に送った request payload、messages、RAG検索結果、token情報を分けて確認できるようになった
+- RAG Context の表示を改善 — 長い Query や source path を確認しやすくし、検索結果を種類ごとに見やすく整理
+- Scenario Editor の Vault Tree を改善 — ファイルの絞り込みとカテゴリ別表示により、シナリオ構成ファイルを探しやすくなった
+- セッションごとの RP profile / summary profile を Session 画面から変更できるようになった
+- Markdown 表示でテーブルに対応 — セッションログや Memory 本文内の表を読みやすく表示できる
+- GM 応答時間を記録・表示するよう改善 — 通常応答と再生成候補ごとの所要時間を確認できる
+- キャラクター立ち絵の bustup が `.png` 以外の画像形式にも対応
+
+### バグ修正
+
+- 非ストリーミング応答やページ再読み込み時に、未完了の応答生成・State / Memory 後処理を復帰しやすくした
+- セッション削除時に、そのセッションで生成された Memory が残り続ける問題を修正
+- Memory や RAG の長いファイル名・path が画面表示を崩す問題を修正
+- Prompt タブでプロンプト順をドラッグアンドドロップした際の不要な console 出力を削除
+
+### 互換性メモ
+
+- 既存セッションログ・State・Prompt Graph・Memory Markdown は引き続き読み込み可能
+- Memory frontmatter に status や source などのメタデータがない場合は、既定値として扱われる
+- resolved / superseded / archived にした Memory は通常の RAG 検索対象から外れる。必要な場合は status を active に戻してください
+
+---
+
 ## v1.2.3 (2026-05-26)
 
 ### Prompt Graph エディタ改善
