@@ -256,6 +256,8 @@ def _validate_rag_node(node_id: str, node: dict[str, Any]) -> None:
         or node["keyword_token_budget"] < 0
     ):
         raise PromptGraphError(f"Prompt graph node '{node_id}' keyword_token_budget must be a non-negative number")
+    if "limits" in node:
+        _validate_rag_limits(node_id, node["limits"])
 
 
 def _validate_source_path(value: str, node_id: str) -> str:
@@ -295,6 +297,17 @@ def _validate_token_budgets(node_id: str, value: object) -> None:
             raise PromptGraphError(f"Prompt graph node '{node_id}' token_budgets keys must be non-empty strings")
         if not isinstance(budget, (int, float)) or isinstance(budget, bool) or budget < 0:
             raise PromptGraphError(f"Prompt graph node '{node_id}' token_budgets values must be non-negative numbers")
+
+
+def _validate_rag_limits(node_id: str, value: object) -> None:
+    """Validate optional per-type count limits on a rag node (counts are integers)."""
+    if not isinstance(value, dict):
+        raise PromptGraphError(f"Prompt graph node '{node_id}' limits must be an object")
+    for key, cap in value.items():
+        if not isinstance(key, str) or not key.strip():
+            raise PromptGraphError(f"Prompt graph node '{node_id}' limits keys must be non-empty strings")
+        if not isinstance(cap, int) or isinstance(cap, bool) or cap < 0:
+            raise PromptGraphError(f"Prompt graph node '{node_id}' limits values must be non-negative integers")
 
 
 def _validate_edges(nodes: list[dict[str, Any]], value: object) -> list[dict[str, str]]:

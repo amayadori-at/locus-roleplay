@@ -76,7 +76,7 @@ def run_memory_summary(
     scenario = load_scenario(vault, scenario_id)
     profile = load_profile(vault, profile_id)
     interval = memory_update_interval_turns(scenario.metadata)
-    start_turn = max(1, turn - interval + 1)
+    start_turn = 0 if turn <= interval else turn - interval + 1
     recent_turns = _turn_entries(sanitize_log_entries(read_session_log(vault, scenario_id, session_id)), start_turn, turn)
     if not recent_turns:
         raise MemorySummaryError("No session log entries are available for memory summarization")
@@ -109,7 +109,9 @@ def compose_memory_summary_messages(context: MemorySummaryContext) -> list[dict[
             "Only include facts supported by the recent turns.",
             "Use Japanese for content when the session is Japanese.",
             "Output keys: session_summary, facts, relationships, unresolved_threads.",
-            "Use arrays for facts, relationships, and unresolved_threads.",
+            "facts, relationships, and unresolved_threads must each be an array of OBJECTS, not strings.",
+            "Every array item must be an object with a non-empty \"content\" field (a Japanese sentence).",
+            "Do not output bare strings inside these arrays.",
         )
     )
     user_content = "\n\n".join(
@@ -130,10 +132,33 @@ def compose_memory_summary_messages(context: MemorySummaryContext) -> list[dict[
                             "locations": [],
                             "topics": [],
                             "importance": 50,
+                            "confidence": 0.75,
                         },
-                        "facts": [],
-                        "relationships": [],
-                        "unresolved_threads": [],
+                        "facts": [
+                            {
+                                "content": "持続的な事実を一文で。",
+                                "characters": [],
+                                "locations": [],
+                                "topics": [],
+                                "importance": 50,
+                            }
+                        ],
+                        "relationships": [
+                            {
+                                "source": "character_id",
+                                "target": "user",
+                                "content": "関係の変化を一文で。",
+                                "topics": [],
+                                "importance": 50,
+                            }
+                        ],
+                        "unresolved_threads": [
+                            {
+                                "content": "未解決の伏線を一文で。",
+                                "topics": [],
+                                "importance": 50,
+                            }
+                        ],
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -161,6 +186,15 @@ def parse_memory_summary_output(raw_output: str) -> dict[str, Any]:
     for field, value in (("facts", facts), ("relationships", relationships), ("unresolved_threads", unresolved)):
         if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
             raise MemorySummaryError(f"{field} must be an array of objects")
+    for field, value in (
+        ("session_summary", [summary] if summary is not None else []),
+        ("facts", facts),
+        ("relationships", relationships),
+        ("unresolved_threads", unresolved),
+    ):
+        for item in value:
+            if isinstance(item, dict):
+                _validate_confidence(field, item.get("confidence"))
     return {
         "session_summary": summary,
         "facts": facts,
@@ -228,17 +262,25 @@ def write_memory_summary_files(vault: Vault, context: MemorySummaryContext, outp
     return created
 
 
-def mark_rag_index_stale(vault: Vault, scenario_id: str, created_files: list[str]) -> None:
+def mark_rag_index_stale(
+    vault: Vault,
+    scenario_id: str,
+    created_files: list[str],
+    *,
+    reason: str = "memory_files_created",
+) -> None:
     if not is_locus_id(scenario_id):
         raise MemorySummaryError(f"Invalid scenario id: {scenario_id}")
     path = vault.resolve("rp/_cache/rag/stale.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "scenario_id": scenario_id,
-        "reason": "memory_files_created",
+        "reason": reason,
         "created_files": created_files,
         "marked_at": _now_iso(),
     }
+    if reason == "memory_files_deleted":
+        payload["deleted_files"] = created_files
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
@@ -262,9 +304,15 @@ def _write_memory_file(
         "locations": _string_list(item.get("locations")),
         "topics": _string_list(item.get("topics")),
         "importance": _importance(item.get("importance")),
+        "status": "active",
+        "source": "model_summary",
+        "last_seen_turn": context.end_turn,
         "rag": True,
         "created": _now_iso(),
     }
+    confidence = _confidence(item.get("confidence"))
+    if confidence is not None:
+        frontmatter["confidence"] = confidence
     content = _item_content(item)
     raw = _markdown(frontmatter, content)
     path = vault.resolve(relative_path)
@@ -296,6 +344,22 @@ def _unique_memory_path(vault: Vault, scenario_id: str, folder: str, filename: s
 def _scenario_relative_memory_path(scenario_id: str, relative_path: str) -> str:
     prefix = f"rp/scenarios/{scenario_id}/"
     return relative_path.removeprefix(prefix)
+
+
+def _validate_confidence(field: str, value: object) -> None:
+    if value is None:
+        return
+    if _confidence(value) is None:
+        raise MemorySummaryError(f"{field}.confidence must be a number between 0 and 1")
+
+
+def _confidence(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    confidence = float(value)
+    if confidence < 0 or confidence > 1:
+        return None
+    return round(confidence, 3)
 
 
 def _markdown(frontmatter: dict[str, Any], body: str) -> str:

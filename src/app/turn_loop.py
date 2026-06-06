@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Protocol
@@ -66,6 +67,7 @@ class TurnResult:
     memory_updated: bool = False
     memory_update_error: str | None = None
     memory_files: list[str] | None = None
+    response_duration_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -122,7 +124,9 @@ def run_gm_turn(
     recent_limit: int = 12,
 ) -> TurnResult:
     prepared = prepare_gm_turn(vault, scenario_id=scenario_id, session_id=session_id, user_message=user_message, recent_limit=recent_limit)
+    started = time.perf_counter()
     result = model_client.create_chat_completion(prepared.profile, prepared.messages)
+    response_duration_ms = _duration_ms(started)
     return finalize_gm_turn(
         vault,
         scenario_id=scenario_id,
@@ -131,6 +135,7 @@ def run_gm_turn(
         assistant_content=result.content,
         prepared=prepared,
         state_model_client=state_model_client,
+        response_duration_ms=response_duration_ms,
     )
 
 
@@ -147,11 +152,13 @@ def run_gm_turn_stream(
 ) -> TurnResult:
     prepared = prepare_gm_turn(vault, scenario_id=scenario_id, session_id=session_id, user_message=user_message, recent_limit=recent_limit)
     chunks: list[str] = []
+    started = time.perf_counter()
     for chunk in model_client.create_chat_completion_stream(prepared.profile, prepared.messages):
         if not chunk:
             continue
         chunks.append(chunk)
         on_delta(chunk)
+    response_duration_ms = _duration_ms(started)
     return finalize_gm_turn(
         vault,
         scenario_id=scenario_id,
@@ -160,6 +167,7 @@ def run_gm_turn_stream(
         assistant_content="".join(chunks),
         prepared=prepared,
         state_model_client=state_model_client,
+        response_duration_ms=response_duration_ms,
     )
 
 
@@ -220,6 +228,7 @@ def finalize_gm_turn(
     assistant_content: str,
     prepared: TurnPreparation,
     state_model_client: ChatCompletionClient | None = None,
+    response_duration_ms: int | None = None,
 ) -> TurnResult:
     write_latest_session_prompt(
         vault,
@@ -240,7 +249,16 @@ def finalize_gm_turn(
     postprocess_content = _strip_reasoning_blocks(assistant_content)
 
     append_session_log(vault, scenario_id, session_id, turn=prepared.turn, role="user", content=user_message)
-    append_session_log(vault, scenario_id, session_id, turn=prepared.turn, role="assistant", content=postprocess_content)
+    assistant_extra = {"response_duration_ms": response_duration_ms} if response_duration_ms is not None else None
+    append_session_log(
+        vault,
+        scenario_id,
+        session_id,
+        turn=prepared.turn,
+        role="assistant",
+        content=postprocess_content,
+        extra=assistant_extra,
+    )
 
     postprocess = run_turn_postprocess(
         vault,
@@ -272,6 +290,7 @@ def finalize_gm_turn(
         memory_updated=postprocess["memory_updated"],
         memory_update_error=postprocess["memory_update_error"],
         memory_files=postprocess["memory_files"],
+        response_duration_ms=response_duration_ms,
     )
 
 
@@ -283,6 +302,7 @@ def finalize_gm_turn_fast(
     user_message: str,
     assistant_content: str,
     prepared: TurnPreparation,
+    response_duration_ms: int | None = None,
 ) -> TurnResult:
     """Fast IO-only finalization: log, segments, metadata. No LLM calls."""
     write_latest_session_prompt(
@@ -303,7 +323,16 @@ def finalize_gm_turn_fast(
     segments = parse_image_markers(assistant_content, scenario=prepared.scenario, vault=vault)
     log_content = _strip_reasoning_blocks(assistant_content)
     append_session_log(vault, scenario_id, session_id, turn=prepared.turn, role="user", content=user_message)
-    append_session_log(vault, scenario_id, session_id, turn=prepared.turn, role="assistant", content=log_content)
+    assistant_extra = {"response_duration_ms": response_duration_ms} if response_duration_ms is not None else None
+    append_session_log(
+        vault,
+        scenario_id,
+        session_id,
+        turn=prepared.turn,
+        role="assistant",
+        content=log_content,
+        extra=assistant_extra,
+    )
     updated_metadata = dict(prepared.metadata)
     updated_metadata["turn_count"] = prepared.turn
     updated_metadata["updated_at"] = _now_iso()
@@ -320,6 +349,7 @@ def finalize_gm_turn_fast(
         memory_updated=False,
         memory_update_error=None,
         memory_files=[],
+        response_duration_ms=response_duration_ms,
     )
 
 
@@ -466,3 +496,7 @@ def _next_turn(metadata: dict[str, Any]) -> int:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def _duration_ms(started: float) -> int:
+    return max(0, round((time.perf_counter() - started) * 1000))

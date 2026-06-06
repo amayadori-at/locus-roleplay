@@ -1,10 +1,12 @@
 <script>
-  import { ArrowLeft, ArrowDown, ArrowUp, Copy, Database, FilePenLine, FilePlus2, GitBranch, ListTree, Minimize2, Network, Plus, RotateCcw, Save, Trash2, X } from "lucide-svelte";
+  import { ArrowLeft, ArrowDown, ArrowUp, ChevronDown, ChevronRight, CircleCheck, Copy, Database, FilePenLine, FilePlus2, GitBranch, ListTree, Minimize2, Network, Plus, RotateCcw, Save, Search, Trash2, X } from "lucide-svelte";
   import { Background, BackgroundVariant, Controls, SvelteFlow } from "@xyflow/svelte";
   import "@xyflow/svelte/dist/style.css";
   import { onMount } from "svelte";
   import {
+    applyMemoryConsolidationSuggestion,
     createScenarioSourceFile,
+    createMemoryConsolidationSuggestions,
     deleteMemory,
     deleteScenarioSourceFile,
     listScenarioMemory,
@@ -18,12 +20,15 @@
     getStartPromptGraph,
     listPersonas,
     listProfiles,
+    listMemoryConsolidationSuggestions,
     listScenarioSessions,
     listScenarioSourceFiles,
     listScenarioStarts,
     rebuildScenarioRagIndex,
     rebuildScenarioVectorIndex,
     updateScenarioSettings,
+    updateMemoryMetadata,
+    updateMemoryConsolidationSuggestionStatus,
     updateScenarioSourceFile,
     updateScenarioPromptGraph,
     updateStartManifest,
@@ -33,6 +38,7 @@
   import {
     RAG_SOURCE_OPTIONS,
     RAG_TYPE_BUDGET_KEYS,
+    RAG_TYPE_LIMIT_KEYS,
     buildPromptFlowEdges,
     buildPromptFlowNodes,
     budgetEnabled,
@@ -46,7 +52,6 @@
     normalizeNodeForType,
     normalizedRagSources,
     parseOptionalNumber,
-    promptNodeOrderSnapshot,
     promptOrderDuplicateWarnings,
     renamePromptNodeInGraph,
     reorderPromptNodeByDrop,
@@ -54,11 +59,13 @@
     setOptionalNumberField,
     setRagSource,
     setRagTypeBudget,
+    setRagTypeLimit,
     sortPromptNodes
   } from "../lib/promptGraphEditor.js";
   import PromptNodeList from "../lib/PromptNodeList.svelte";
   import PromptPreviewPanel from "../lib/PromptPreviewPanel.svelte";
   import SourceEditorPanel from "../lib/SourceEditorPanel.svelte";
+  import { buildMemoryFilterOptions, memoryMatchesFilters as memoryItemMatchesFilters } from "../lib/memoryReview.js";
 
   /** @type {{ scenarioId?: string, mode?: string, query?: Record<string, string> }} */
   export let route;
@@ -69,6 +76,9 @@
   /** @type {Array<{ path: string, size?: number }>} */
   let files = [];
   let selectedPath = "";
+  let sourceFilter = "";
+  /** @type {Record<string, boolean>} */
+  let sourceGroupOpen = {};
   let content = "";
   let sourceContent = "";
   let sourceDirty = false;
@@ -215,6 +225,23 @@
   let memoryError = "";
   let deletingMemoryId = "";
   let memoryMessage = "";
+  let updatingMemoryId = "";
+  let memoryFilterKind = "all";
+  let memoryFilterStatus = "all";
+  let memoryFilterSource = "all";
+  let memoryFilterRag = "all";
+  let memoryFilterCharacter = "";
+  let memoryFilterLocation = "";
+  let memoryFilterTopic = "";
+  /** @type {Array<Record<string, any>>} */
+  let consolidationSuggestions = [];
+  let consolidationLoading = false;
+  let consolidationRunning = false;
+  let consolidationError = "";
+  let consolidationMessage = "";
+  let consolidationSessionId = "";
+  let consolidationProfileId = "";
+  let updatingSuggestionId = "";
 
   $: promptNodeList = sortPromptNodes(/** @type {Array<Record<string, any>>} */ (promptGraph?.nodes || []));
   $: selectedPromptNodeIndex = promptNodeList.findIndex((node) => node.id === selectedVisualNodeId);
@@ -223,10 +250,14 @@
   $: visualFlowEdges = buildPromptFlowEdges(promptNodeList, /** @type {Array<Record<string, any>>} */ (promptGraph?.edges || []), selectedVisualNodeId);
   $: promptGraphLocalWarnings = promptOrderDuplicateWarnings(promptNodeList);
   $: visiblePromptGraphWarnings = [...promptGraphWarnings, ...promptGraphLocalWarnings];
+  $: groupedSourceFiles = groupSourceFiles(files, sourceFilter);
+  $: memoryFilterOptions = buildMemoryFilterOptions(memoryGroups);
+  $: consolidationProfileOptions = profiles.filter((profile) => profile.kind === "memory_summary" || profile.kind === "state_update" || profile.kind === "roleplay");
   onMount(async () => {
     const mq = window.matchMedia("(max-width: 860px)");
     isMobile = mq.matches;
     mq.addEventListener("change", (e) => { isMobile = e.matches; });
+    hydrateSourceGroupOpen();
     await loadFiles();
   });
 
@@ -243,6 +274,7 @@
       files = payload.files || [];
       const requestedPath = route.query?.source || "";
       selectedPath = files.some((file) => file.path === requestedPath) ? requestedPath : files[0]?.path || "";
+      ensureSourceGroupOpen(selectedPath);
       if (selectedPath) {
         await loadFile(selectedPath);
       }
@@ -260,6 +292,7 @@
       return;
     }
     selectedPath = path;
+    ensureSourceGroupOpen(path);
     loadingFile = true;
     error = "";
     try {
@@ -361,6 +394,120 @@
     sourceContent = content;
     sourceDirty = false;
     sourceMessage = "";
+  }
+
+  const sourceGroupOrder = [
+    { id: "core", labelKey: "editor.sourceGroupCore" },
+    { id: "gm", labelKey: "editor.sourceGroupGm" },
+    { id: "characters", labelKey: "editor.sourceGroupCharacters" },
+    { id: "lore", labelKey: "editor.sourceGroupLore" },
+    { id: "startings", labelKey: "editor.sourceGroupStartings" },
+    { id: "memory", labelKey: "editor.sourceGroupMemory" },
+    { id: "other", labelKey: "editor.sourceGroupOther" }
+  ];
+
+  function defaultSourceGroupOpen() {
+    return {
+      core: true,
+      gm: true,
+      characters: true,
+      lore: true,
+      startings: true,
+      memory: false,
+      other: true
+    };
+  }
+
+  function sourceGroupStorageKey() {
+    return `locus_source_groups_${route.scenarioId || "global"}`;
+  }
+
+  function hydrateSourceGroupOpen() {
+    sourceGroupOpen = defaultSourceGroupOpen();
+    try {
+      const raw = window.localStorage.getItem(sourceGroupStorageKey());
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (parsed && typeof parsed === "object") {
+        sourceGroupOpen = { ...sourceGroupOpen, ...parsed };
+      }
+    } catch {
+      sourceGroupOpen = defaultSourceGroupOpen();
+    }
+  }
+
+  function saveSourceGroupOpen() {
+    try {
+      window.localStorage.setItem(sourceGroupStorageKey(), JSON.stringify(sourceGroupOpen));
+    } catch {
+      // localStorage may be unavailable in private contexts; the UI can still work without persistence.
+    }
+  }
+
+  /** @param {string} path */
+  function sourceGroupId(path) {
+    if (path === "scenario.md" || path === "system_prompt.md") return "core";
+    const top = path.split("/")[0] || "";
+    if (["gm", "characters", "lore", "startings", "memory"].includes(top)) return top;
+    return "other";
+  }
+
+  /** @param {string} path */
+  function sourceDisplayName(path) {
+    const parts = path.split("/");
+    return parts[parts.length - 1] || path;
+  }
+
+  /** @param {string} path */
+  function sourceDirectoryLabel(path) {
+    const parts = path.split("/");
+    return parts.length > 1 ? parts.slice(0, -1).join("/") : "";
+  }
+
+  /**
+   * @param {Array<{ path: string, size?: number }>} sourceFiles
+   * @param {string} filterText
+   */
+  function groupSourceFiles(sourceFiles, filterText) {
+    const normalizedFilter = filterText.trim().toLowerCase();
+    /** @type {Record<string, Array<{ path: string, size?: number }>>} */
+    const buckets = {};
+    for (const group of sourceGroupOrder) {
+      buckets[group.id] = [];
+    }
+    for (const file of sourceFiles) {
+      if (normalizedFilter && !file.path.toLowerCase().includes(normalizedFilter)) {
+        continue;
+      }
+      const groupId = sourceGroupId(file.path);
+      buckets[groupId]?.push(file);
+    }
+    return sourceGroupOrder
+      .map((group) => ({ ...group, files: buckets[group.id] || [] }))
+      .filter((group) => group.files.length > 0);
+  }
+
+  /**
+   * @param {string} groupId
+   * @param {Record<string, boolean>} openState
+   */
+  function isSourceGroupOpen(groupId, openState = sourceGroupOpen) {
+    return openState[groupId] !== false;
+  }
+
+  /** @param {string} groupId */
+  function toggleSourceGroup(groupId) {
+    sourceGroupOpen = { ...sourceGroupOpen, [groupId]: !isSourceGroupOpen(groupId, sourceGroupOpen) };
+    saveSourceGroupOpen();
+  }
+
+  /** @param {string} path */
+  function ensureSourceGroupOpen(path) {
+    if (!path) return;
+    const groupId = sourceGroupId(path);
+    if (sourceGroupOpen[groupId] === false) {
+      sourceGroupOpen = { ...sourceGroupOpen, [groupId]: true };
+      saveSourceGroupOpen();
+    }
   }
 
   /** @param {Event} event */
@@ -510,6 +657,8 @@
       previewSessionId = sessions[0]?.session_id || "";
       previewPersonaId = personas[0]?.id || "";
       previewProfileId = roleplayProfiles()[0]?.id || profiles[0]?.id || "";
+      consolidationSessionId = previewSessionId;
+      consolidationProfileId = profiles.find((profile) => profile.kind === "memory_summary")?.id || profiles[0]?.id || "";
     } catch (caught) {
       promptPreviewError = caught instanceof Error ? caught.message : translateNow("editor.loadPreviewError");
     } finally {
@@ -702,6 +851,15 @@
 
   /**
    * @param {Record<string, any>} node
+   * @param {string} key
+   */
+  function ragTypeLimitValue(node, key) {
+    const value = node?.limits?.[key];
+    return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : "";
+  }
+
+  /**
+   * @param {Record<string, any>} node
    * @param {string} source
    */
   function ragSourceChecked(node, source) {
@@ -729,7 +887,6 @@
     document.removeEventListener("pointermove", updateNodeDragFromPointer);
     document.removeEventListener("pointerup", finishNodePointerDrag);
     document.removeEventListener("pointercancel", clearNodeDragState);
-    console.log("[PromptGraphDrag] clear", { draggedNodeId, dragTargetNodeId, dragDropAfter });
     draggedNodeId = "";
     dragTargetNodeId = "";
     dragDropAfter = false;
@@ -745,10 +902,6 @@
     draggedNodeId = nodeId;
     dragTargetNodeId = "";
     dragDropAfter = false;
-    console.log("[PromptGraphDrag] start", {
-      nodeId,
-      order: promptNodes().map((node) => ({ id: node.id, order: node.order }))
-    });
     document.addEventListener("pointermove", updateNodeDragFromPointer);
     document.addEventListener("pointerup", finishNodePointerDrag);
     document.addEventListener("pointercancel", clearNodeDragState);
@@ -763,20 +916,11 @@
     const element = document.elementFromPoint(event.clientX, event.clientY);
     const target = element?.closest?.(".node-item");
     if (!(target instanceof HTMLElement)) {
-      console.log("[PromptGraphDrag] move-no-target", {
-        source: draggedNodeId,
-        x: event.clientX,
-        y: event.clientY
-      });
       dragTargetNodeId = "";
       return;
     }
     const nodeId = target.dataset.nodeId || "";
     if (!nodeId || nodeId === draggedNodeId) {
-      console.log("[PromptGraphDrag] move-skip", {
-        source: draggedNodeId,
-        target: nodeId || null
-      });
       dragTargetNodeId = "";
       return;
     }
@@ -786,29 +930,12 @@
     const targetIndex = promptNodes().findIndex((node) => node.id === nodeId);
     const pointerAfter = event.clientY > rect.top + rect.height / 2;
     dragDropAfter = sourceIndex < targetIndex ? true : sourceIndex > targetIndex ? false : pointerAfter;
-    console.log("[PromptGraphDrag] move-target", {
-      source: draggedNodeId,
-      target: nodeId,
-      insertAfter: dragDropAfter,
-      pointerAfter,
-      sourceIndex,
-      targetIndex,
-      pointerY: event.clientY,
-      targetTop: rect.top,
-      targetHeight: rect.height
-    });
   }
 
   function finishNodePointerDrag() {
     const sourceNodeId = draggedNodeId;
     const targetNodeId = dragTargetNodeId;
     const insertAfter = dragDropAfter;
-    console.log("[PromptGraphDrag] finish", {
-      draggedNodeId: sourceNodeId,
-      dragTargetNodeId: targetNodeId,
-      dragDropAfter: insertAfter,
-      order: promptNodes().map((node) => ({ id: node.id, order: node.order }))
-    });
     if (targetNodeId) {
       reorderNodeByDrop(sourceNodeId, targetNodeId, insertAfter);
     }
@@ -822,25 +949,12 @@
    */
   function reorderNodeByDrop(sourceNodeId, targetNodeId, insertAfter) {
     if (!promptGraph || !sourceNodeId || !targetNodeId || sourceNodeId === targetNodeId) {
-      console.log("[PromptGraphDrag] reorder-skip-input", { sourceNodeId, targetNodeId, insertAfter, hasGraph: !!promptGraph });
       return;
     }
-    const before = promptNodeOrderSnapshot(promptNodeList);
     const reordered = reorderPromptNodeByDrop(promptNodeList, sourceNodeId, targetNodeId, insertAfter);
     if (!reordered) {
-      console.log("[PromptGraphDrag] reorder-noop", { sourceNodeId, targetNodeId, insertAfter, before });
       return;
     }
-    console.log("[PromptGraphDrag] reorder-apply", {
-      sourceNodeId,
-      targetNodeId,
-      insertAfter,
-      sourceIndex: reordered.sourceIndex,
-      targetIndex: reordered.targetIndex,
-      insertIndex: reordered.insertIndex,
-      before,
-      after: promptNodeOrderSnapshot(reordered.nodes)
-    });
     promptGraph = { ...promptGraph, nodes: reordered.nodes };
     selectedVisualNodeId = reordered.movedId;
     addingNode = false;
@@ -956,6 +1070,17 @@
     const node = promptNodes()[index];
     if (!node) return;
     updateNode(index, setRagTypeBudget(node, key, optionalNumber(value)));
+  }
+
+  /**
+   * @param {number} index
+   * @param {string} key
+   * @param {string} value
+   */
+  function updateRagTypeLimit(index, key, value) {
+    const node = promptNodes()[index];
+    if (!node) return;
+    updateNode(index, setRagTypeLimit(node, key, optionalNumber(value)));
   }
 
   /**
@@ -1246,6 +1371,141 @@
     }
   }
 
+  async function loadConsolidationSuggestions() {
+    if (!route.scenarioId) return;
+    consolidationLoading = true;
+    consolidationError = "";
+    try {
+      const payload = await listMemoryConsolidationSuggestions(route.scenarioId);
+      consolidationSuggestions = payload.suggestions || [];
+    } catch (caught) {
+      consolidationError = caught instanceof Error ? caught.message : translateNow("editor.consolidationLoadError");
+    } finally {
+      consolidationLoading = false;
+    }
+  }
+
+  async function doCreateConsolidationSuggestions() {
+    if (!route.scenarioId || consolidationRunning || !consolidationSessionId || !consolidationProfileId) return;
+    consolidationRunning = true;
+    consolidationError = "";
+    consolidationMessage = "";
+    try {
+      const payload = await createMemoryConsolidationSuggestions(route.scenarioId, {
+        session_id: consolidationSessionId,
+        profile_id: consolidationProfileId
+      });
+      consolidationMessage = translateNow("editor.consolidationCreated", { count: payload.created_files?.length ?? 0 });
+      await loadConsolidationSuggestions();
+    } catch (caught) {
+      consolidationError = caught instanceof Error ? caught.message : translateNow("editor.consolidationCreateError");
+    } finally {
+      consolidationRunning = false;
+    }
+  }
+
+  /**
+   * @param {string} suggestionId
+   * @param {string} status
+   */
+  async function doSetSuggestionStatus(suggestionId, status) {
+    if (!route.scenarioId || updatingSuggestionId) return;
+    updatingSuggestionId = suggestionId;
+    consolidationError = "";
+    consolidationMessage = "";
+    try {
+      await updateMemoryConsolidationSuggestionStatus(route.scenarioId, suggestionId, status);
+      consolidationMessage = translateNow("editor.consolidationStatusSaved");
+      await loadConsolidationSuggestions();
+    } catch (caught) {
+      consolidationError = caught instanceof Error ? caught.message : translateNow("editor.consolidationUpdateError");
+    } finally {
+      updatingSuggestionId = "";
+    }
+  }
+
+  /** @param {string} suggestionId */
+  async function doApplySuggestion(suggestionId) {
+    if (!route.scenarioId || updatingSuggestionId) return;
+    updatingSuggestionId = suggestionId;
+    consolidationError = "";
+    consolidationMessage = "";
+    try {
+      const payload = await applyMemoryConsolidationSuggestion(route.scenarioId, suggestionId);
+      consolidationMessage = translateNow("editor.consolidationApplied", { count: payload.updated_memory_paths?.length ?? 0 });
+      await Promise.all([loadConsolidationSuggestions(), loadMemory()]);
+    } catch (caught) {
+      consolidationError = caught instanceof Error ? caught.message : translateNow("editor.consolidationUpdateError");
+    } finally {
+      updatingSuggestionId = "";
+    }
+  }
+
+  /**
+   * @param {string} kind
+   * @param {Record<string, any>} item
+   */
+  function memoryMatchesFilters(kind, item) {
+    return memoryItemMatchesFilters(kind, item, {
+      kind: memoryFilterKind,
+      status: memoryFilterStatus,
+      source: memoryFilterSource,
+      rag: memoryFilterRag,
+      character: memoryFilterCharacter,
+      location: memoryFilterLocation,
+      topic: memoryFilterTopic
+    });
+  }
+
+  /**
+   * @param {string} kind
+   * @param {string} memoryId
+   * @param {boolean} ragEnabled
+   */
+  async function doSetMemoryRag(kind, memoryId, ragEnabled) {
+    if (!route.scenarioId || updatingMemoryId) return;
+    updatingMemoryId = `${kind}/${memoryId}`;
+    memoryMessage = "";
+    memoryError = "";
+    try {
+      await updateMemoryMetadata(route.scenarioId, kind, memoryId, { rag_enabled: ragEnabled });
+      memoryMessage = ragEnabled ? translateNow("editor.memoryRagEnabled") : translateNow("editor.memoryRagDisabled");
+      await loadMemory();
+    } catch (caught) {
+      memoryError = caught instanceof Error ? caught.message : translateNow("editor.memoryUpdateError");
+    } finally {
+      updatingMemoryId = "";
+    }
+  }
+
+  /**
+   * @param {string} kind
+   * @param {string} memoryId
+   */
+  async function doResolveMemory(kind, memoryId) {
+    if (!route.scenarioId || updatingMemoryId) return;
+    updatingMemoryId = `${kind}/${memoryId}`;
+    memoryMessage = "";
+    memoryError = "";
+    try {
+      await updateMemoryMetadata(route.scenarioId, kind, memoryId, { status: "resolved" });
+      memoryMessage = translateNow("editor.memoryResolved");
+      await loadMemory();
+    } catch (caught) {
+      memoryError = caught instanceof Error ? caught.message : translateNow("editor.memoryUpdateError");
+    } finally {
+      updatingMemoryId = "";
+    }
+  }
+
+  /** @param {string} path */
+  async function openMemorySource(path) {
+    if (!path) return;
+    await loadFile(path);
+    sourceGroupOpen.memory = true;
+    activeTab = "markdown";
+  }
+
   /**
    * @param {string} kind
    * @param {string} memoryId
@@ -1305,7 +1565,7 @@
         <button class:selected={activeTab === "prompt"} type="button" onclick={() => { activeTab = "prompt"; if (!starts.length) void loadStarts(); }}>
           Prompt
         </button>
-        <button class:selected={activeTab === "knowledge"} type="button" onclick={() => { activeTab = "knowledge"; void loadRagStatus(); void loadMemory(); }}>
+        <button class:selected={activeTab === "knowledge"} type="button" onclick={() => { activeTab = "knowledge"; void loadRagStatus(); void loadMemory(); void loadConsolidationSuggestions(); }}>
           Knowledge
         </button>
       </div>
@@ -1329,23 +1589,65 @@
           <FilePlus2 size={16} aria-hidden="true" />
         </button>
       </div>
+      <div class="source-filter">
+        <Search size={15} aria-hidden="true" />
+        <input
+          class="compact-input"
+          type="search"
+          bind:value={sourceFilter}
+          placeholder={$t("editor.filterFiles")}
+          aria-label={$t("editor.filterFiles")}
+        />
+        {#if sourceFilter}
+          <button class="icon-button compact-icon" type="button" title={$t("common.clear")} onclick={() => (sourceFilter = "")}>
+            <X size={14} aria-hidden="true" />
+          </button>
+        {/if}
+      </div>
       {#if files.length}
-        <ul class="select-list">
-          {#each files as file}
-            <li>
+        <div class="source-groups">
+          {#each groupedSourceFiles as group}
+            <section class="source-group">
               <button
-                class:selected={file.path === selectedPath}
+                class="source-group-toggle"
+                class:empty={group.files.length === 0}
                 type="button"
-                disabled={sourceDirty}
-                title={sourceDirty ? $t("editor.unsavedWarning") : file.path}
-                onclick={() => loadFile(file.path)}
+                disabled={group.files.length === 0}
+                onclick={() => toggleSourceGroup(group.id)}
               >
-                <strong>{file.path}</strong>
-                <span>{file.size || 0} bytes</span>
+                {#if isSourceGroupOpen(group.id, sourceGroupOpen)}
+                  <ChevronDown size={15} aria-hidden="true" />
+                {:else}
+                  <ChevronRight size={15} aria-hidden="true" />
+                {/if}
+                <strong>{$t(group.labelKey)}</strong>
+                <span>{$t("editor.fileCount", { count: group.files.length })}</span>
               </button>
-            </li>
+              {#if isSourceGroupOpen(group.id, sourceGroupOpen) && group.files.length}
+                <ul class="select-list grouped-select-list">
+                  {#each group.files as file}
+                    <li>
+                      <button
+                        class:selected={file.path === selectedPath}
+                        type="button"
+                        disabled={sourceDirty}
+                        title={sourceDirty ? $t("editor.unsavedWarning") : file.path}
+                        onclick={() => loadFile(file.path)}
+                      >
+                        <strong>{sourceDisplayName(file.path)}</strong>
+                        <span>{sourceDirectoryLabel(file.path) || file.path}</span>
+                        <span>{file.size || 0} bytes</span>
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </section>
           {/each}
-        </ul>
+          {#if sourceFilter.trim() && groupedSourceFiles.every((group) => group.files.length === 0)}
+            <p class="source-empty-copy">{$t("editor.noMatchingFiles")}</p>
+          {/if}
+        </div>
       {:else}
         <p>{$t("editor.noFiles")}</p>
       {/if}
@@ -1664,6 +1966,26 @@
                                 oninput={(e) => updateOptionalNumberField(idx, "limit", e.currentTarget.value)} />
                             </div>
                           </div>
+                          <div class="field-row">
+                            <span class="field-label">件数上限(type別)</span>
+                            <div class="field-val budget-3col">
+                              {#each RAG_TYPE_LIMIT_KEYS as key}
+                                <div>
+                                  <div class="budget-sub">{key}</div>
+                                  <input
+                                    class="compact-input"
+                                    type="number"
+                                    min="0"
+                                    step="1"
+                                    value={ragTypeLimitValue(node || {}, key)}
+                                    placeholder={key}
+                                    title={$t("editor.ragTypeLimitHelp")}
+                                    oninput={(e) => updateRagTypeLimit(idx, key, e.currentTarget.value)}
+                                  />
+                                </div>
+                              {/each}
+                            </div>
+                          </div>
                         </div>
                       {/if}
 
@@ -1972,6 +2294,24 @@
                             title={$t("editor.ragLimitHelp")}
                             oninput={(e) => updateOptionalNumberField(idx, "limit", e.currentTarget.value)} />
                         </label>
+                        <fieldset class="visual-field type-budgets">
+                          <legend class="visual-field-label">{$t("editor.ragTypeLimits")}</legend>
+                          {#each RAG_TYPE_LIMIT_KEYS as key}
+                            <label class="visual-field">
+                              <span class="visual-field-label">{key}</span>
+                              <input
+                                class="compact-input"
+                                type="number"
+                                min="0"
+                                step="1"
+                                value={ragTypeLimitValue(node || {}, key)}
+                                placeholder={key}
+                                title={$t("editor.ragTypeLimitHelp")}
+                                oninput={(e) => updateRagTypeLimit(idx, key, e.currentTarget.value)}
+                              />
+                            </label>
+                          {/each}
+                        </fieldset>
                         {#if budgetEnabled(node || {})}
                           <label class="visual-field">
                             <span class="visual-field-label">keyword token budget</span>
@@ -2119,35 +2459,119 @@
           {#if memoryError}
             <p class="notice error-notice">{memoryError}</p>
           {/if}
+          <div class="memory-filter-grid">
+            <label>
+              <span>{$t("editor.memoryFilterKind")}</span>
+              <select bind:value={memoryFilterKind}>
+                <option value="all">{$t("common.all")}</option>
+                {#each memoryFilterOptions.kinds as kind}
+                  <option value={kind}>{kind}</option>
+                {/each}
+              </select>
+            </label>
+            <label>
+              <span>{$t("editor.memoryFilterStatus")}</span>
+              <select bind:value={memoryFilterStatus}>
+                <option value="all">{$t("common.all")}</option>
+                {#each memoryFilterOptions.statuses as status}
+                  <option value={status}>{status}</option>
+                {/each}
+              </select>
+            </label>
+            <label>
+              <span>{$t("editor.memoryFilterSource")}</span>
+              <select bind:value={memoryFilterSource}>
+                <option value="all">{$t("common.all")}</option>
+                {#each memoryFilterOptions.sources as source}
+                  <option value={source}>{source}</option>
+                {/each}
+              </select>
+            </label>
+            <label>
+              <span>{$t("editor.memoryFilterRag")}</span>
+              <select bind:value={memoryFilterRag}>
+                <option value="all">{$t("common.all")}</option>
+                <option value="enabled">{$t("editor.memoryRagEnabledShort")}</option>
+                <option value="disabled">{$t("editor.memoryRagDisabledShort")}</option>
+              </select>
+            </label>
+            <label>
+              <span>{$t("editor.memoryFilterCharacters")}</span>
+              <input bind:value={memoryFilterCharacter} type="search" />
+            </label>
+            <label>
+              <span>{$t("editor.memoryFilterLocations")}</span>
+              <input bind:value={memoryFilterLocation} type="search" />
+            </label>
+            <label>
+              <span>{$t("editor.memoryFilterTopics")}</span>
+              <input bind:value={memoryFilterTopic} type="search" />
+            </label>
+          </div>
           {#if memoryLoading}
             <p class="notice">{$t("editor.loadingFiles")}</p>
           {:else}
             {#each Object.entries(memoryGroups) as [kind, items]}
+              {@const filteredItems = items.filter((item) => memoryMatchesFilters(kind, item))}
               <div class="rag-section">
                 <div class="rag-section-header">
                   <h4>{kind}</h4>
-                  <span class="rag-count">{items.length}</span>
+                  <span class="rag-count">{filteredItems.length}/{items.length}</span>
                 </div>
-                {#if items.length}
+                {#if filteredItems.length}
                   <ul class="memory-list">
-                    {#each items as item}
+                    {#each filteredItems as item}
                       {@const memId = item.path.split("/").pop()?.replace(/\.md$/, "") ?? ""}
                       <li class="memory-item">
                         <div class="memory-item-info">
                           <span class="memory-item-title">{item.title || memId}</span>
+                          <span class="memory-item-meta">
+                            <span>{item.memory_kind || kind}</span>
+                            <span>{item.status || "active"}</span>
+                            <span>{item.source || "unknown"}</span>
+                            <span>{item.rag_enabled ? $t("editor.memoryRagEnabledShort") : $t("editor.memoryRagDisabledShort")}</span>
+                          </span>
                           {#if item.excerpt}
                             <span class="memory-item-excerpt">{item.excerpt}</span>
                           {/if}
+                          <label class="memory-rag-toggle">
+                            <input
+                              type="checkbox"
+                              checked={item.rag_enabled}
+                              disabled={!!updatingMemoryId}
+                              onchange={(event) => void doSetMemoryRag(kind, memId, event.currentTarget.checked)}
+                            />
+                            <span>{$t("editor.memoryRagToggle")}</span>
+                          </label>
                         </div>
-                        <button
-                          class="icon-button compact-icon"
-                          type="button"
-                          title={$t("common.delete")}
-                          disabled={!!deletingMemoryId}
-                          onclick={() => void doDeleteMemory(kind, memId)}
-                        >
-                          <Trash2 size={14} aria-hidden="true" />
-                        </button>
+                        <div class="memory-item-actions">
+                          <button
+                            class="icon-button compact-icon"
+                            type="button"
+                            title={$t("editor.memoryOpenSource")}
+                            onclick={() => void openMemorySource(item.path)}
+                          >
+                            <FilePenLine size={14} aria-hidden="true" />
+                          </button>
+                          <button
+                            class="icon-button compact-icon"
+                            type="button"
+                            title={$t("editor.memoryMarkResolved")}
+                            disabled={!!updatingMemoryId || item.status === "resolved"}
+                            onclick={() => void doResolveMemory(kind, memId)}
+                          >
+                            <CircleCheck size={14} aria-hidden="true" />
+                          </button>
+                          <button
+                            class="icon-button compact-icon"
+                            type="button"
+                            title={$t("common.delete")}
+                            disabled={!!deletingMemoryId || !!updatingMemoryId}
+                            onclick={() => void doDeleteMemory(kind, memId)}
+                          >
+                            <Trash2 size={14} aria-hidden="true" />
+                          </button>
+                        </div>
                       </li>
                     {/each}
                   </ul>
@@ -2160,6 +2584,119 @@
               <p class="notice">{$t("editor.noFiles")}</p>
             {/if}
           {/if}
+
+          <div class="knowledge-divider"><span>{$t("editor.consolidationSuggestions")}</span></div>
+          <div class="rag-section">
+            <div class="rag-section-header">
+              <h4>{$t("editor.consolidationSuggestions")}</h4>
+              <div class="rag-actions">
+                <button class="icon-button compact-icon" type="button" title={$t("editor.reload")} onclick={() => void loadConsolidationSuggestions()}>
+                  <RotateCcw size={14} aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+            <div class="consolidation-controls">
+              <label>
+                <span>{$t("editor.consolidationSession")}</span>
+                <select bind:value={consolidationSessionId}>
+                  {#each sessions as session}
+                    <option value={session.session_id}>{session.display_name || session.session_id}</option>
+                  {/each}
+                </select>
+              </label>
+              <label>
+                <span>{$t("editor.consolidationProfile")}</span>
+                <select bind:value={consolidationProfileId}>
+                  {#each consolidationProfileOptions as profile}
+                    <option value={profile.id}>{profile.id}</option>
+                  {/each}
+                </select>
+              </label>
+              <button
+                class="primary-button"
+                type="button"
+                disabled={consolidationRunning || !consolidationSessionId || !consolidationProfileId}
+                onclick={() => void doCreateConsolidationSuggestions()}
+              >
+                {$t("editor.consolidationRun")}
+              </button>
+            </div>
+            {#if consolidationMessage}
+              <p class="rag-message">{consolidationMessage}</p>
+            {/if}
+            {#if consolidationError}
+              <p class="notice error-notice">{consolidationError}</p>
+            {/if}
+            {#if consolidationLoading}
+              <p class="notice">{$t("editor.loadingFiles")}</p>
+            {:else if consolidationSuggestions.length}
+              <ul class="memory-list">
+                {#each consolidationSuggestions as suggestion}
+                  <li class="memory-item">
+                    <div class="memory-item-info">
+                      <span class="memory-item-title">{suggestion.title || suggestion.id}</span>
+                      <span class="memory-item-meta">
+                        <span>{suggestion.status}</span>
+                        <span>{suggestion.source}</span>
+                        <span>{suggestion.affected_memory_paths?.length ?? 0} paths</span>
+                      </span>
+                      {#if suggestion.content}
+                        <span class="memory-item-excerpt">{suggestion.content}</span>
+                      {/if}
+                      {#if suggestion.suggested_actions?.length}
+                        <ul class="suggested-action-list">
+                          {#each suggestion.suggested_actions as action}
+                            <li>
+                              <code>{action.action}</code>
+                              <span>{action.path}</span>
+                              {#if action.status}
+                                <span>{action.status}</span>
+                              {/if}
+                              {#if action.supersedes?.length}
+                                <span>{action.supersedes.join(", ")}</span>
+                              {/if}
+                              {#if action.superseded_by?.length}
+                                <span>{action.superseded_by.join(", ")}</span>
+                              {/if}
+                            </li>
+                          {/each}
+                        </ul>
+                      {/if}
+                    </div>
+                    <button
+                      class="icon-button compact-icon"
+                      type="button"
+                      title={$t("editor.consolidationAccept")}
+                      disabled={!!updatingSuggestionId || suggestion.status === "accepted" || suggestion.status === "applied"}
+                      onclick={() => void doSetSuggestionStatus(suggestion.id, "accepted")}
+                    >
+                      <Save size={14} aria-hidden="true" />
+                    </button>
+                    <button
+                      class="icon-button compact-icon"
+                      type="button"
+                      title={$t("editor.consolidationReject")}
+                      disabled={!!updatingSuggestionId || suggestion.status === "rejected" || suggestion.status === "applied"}
+                      onclick={() => void doSetSuggestionStatus(suggestion.id, "rejected")}
+                    >
+                      <X size={14} aria-hidden="true" />
+                    </button>
+                    <button
+                      class="icon-button compact-icon"
+                      type="button"
+                      title={$t("editor.consolidationApply")}
+                      disabled={!!updatingSuggestionId || suggestion.status !== "accepted"}
+                      onclick={() => void doApplySuggestion(suggestion.id)}
+                    >
+                      <FilePenLine size={14} aria-hidden="true" />
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {:else}
+              <p class="notice">{$t("editor.consolidationNoSuggestions")}</p>
+            {/if}
+          </div>
         </div>
       {/if}
     </section>

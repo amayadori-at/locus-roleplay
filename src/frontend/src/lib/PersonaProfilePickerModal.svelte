@@ -24,6 +24,10 @@
   export let pickerState;
   /** @type {any} store returned by createSessionSelectionStore() */
   export let selection;
+  /** @type {((id: string) => void) | null} 既存セッションの GM profile 変更を通知する任意コールバック */
+  export let onChooseRpProfile = null;
+  /** @type {((id: string) => void) | null} 既存セッションの state profile 変更を通知する任意コールバック */
+  export let onChooseStateProfile = null;
 
   let defaultRpProfileId = getDefaultRpProfileId();
   let defaultStateProfileId = getDefaultStateProfileId();
@@ -147,12 +151,14 @@
   /** @param {string} id */
   function chooseRpProfile(id) {
     selection.chooseRpProfile(id);
+    onChooseRpProfile?.(id);
     close();
   }
 
   /** @param {string} id */
   function chooseStateProfile(id) {
     selection.chooseStateProfile(id);
+    onChooseStateProfile?.(id);
     close();
   }
 </script>

@@ -27,9 +27,11 @@
     getScenarioRagStatus,
     getScenarioState,
     getPostprocessJob,
+    getSessionDetail,
     getSessionLog,
     getSessionPromptPreview,
     getSessionTimeline,
+    getTurnJob,
     listPersonas,
     listProfiles,
     listScenarioMemory,
@@ -48,7 +50,8 @@
     continueTurnStream,
     getSessionPins,
     updateSessionPins,
-    updateSessionStarting
+    updateSessionStarting,
+    updateMemoryMetadata
   } from "../lib/api.js";
   import {
     EMPTY_SELECTION,
@@ -62,11 +65,13 @@
     appendPendingTurnMessages,
     appendStreamingDeltaToMessages,
     finalizeTurnMessages,
+    formatResponseDuration,
     mergeLogPagination,
     mergeOlderLogMessages,
     nextAssistantCandidateIndex,
     removePendingTurnMessages,
-    updateRegeneratingAssistantMessage
+    updateRegeneratingAssistantMessage,
+    updateStreamingContinuedAssistantMessage
   } from "../lib/sessionLog.js";
   import { createSessionPickerStore } from "../lib/sessionPicker.js";
   import { createSessionPreferencesStore } from "../lib/sessionPreferences.js";
@@ -113,7 +118,7 @@
     return content.replaceAll("{{user}}", userLabel);
   }
 
-  /** @type {Array<{ role: string, content: string, segments?: Array<Record<string, any>>, turn?: number, streaming?: boolean, candidates?: string[], active_candidate_index?: number, is_starting?: boolean, starting_id?: string }>} */
+  /** @type {Array<{ role: string, content: string, segments?: Array<Record<string, any>>, turn?: number, streaming?: boolean, candidates?: string[], active_candidate_index?: number, is_starting?: boolean, starting_id?: string, response_duration_ms?: number }>} */
   let messages = [];
   /** @type {Array<Record<string, any>>} */
   let timeline = [];
@@ -126,6 +131,7 @@
   let loadingOlderLog = false;
   let sending = false;
   let stateUpdating = false;
+  let turnJobPolling = false;
   let error = "";
   let turnNotice = "";
   let input = "";
@@ -174,6 +180,8 @@
   let memoryError = "";
   /** @type {Record<string, any> | null} */
   let memoryList = null;
+  let memoryStatusSaving = false;
+  let memoryStatusMessage = "";
   let activeMemoryPath = "";
   /** @type {Record<string, any> | null} */
   let selectedMemoryItem = null;
@@ -202,6 +210,8 @@
   let turnAbortController = null;
   /** @type {ReturnType<typeof setTimeout> | null} */
   let postprocessPollTimer = null;
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let turnPollTimer = null;
 
   $: selectedMemoryItem = activeMemoryItem();
   $: showSessionSide = !isMobile || Boolean(currentSessionId);
@@ -372,6 +382,32 @@
     }
   }
 
+  /** @param {string} id */
+  async function handleSessionRpProfileChange(id) {
+    if (!route.scenarioId || !currentSessionId) return;
+    if (!id || id === EMPTY_SELECTION) return;
+    if (id === sessionMetadata.rp_profile_id) return;
+    try {
+      const payload = await updateSessionSettings(route.scenarioId, currentSessionId, { rp_profile_id: id });
+      sessionMetadata = payload.session || sessionMetadata;
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : translateNow("session.profileUpdateError");
+    }
+  }
+
+  /** @param {string} id */
+  async function handleSessionStateProfileChange(id) {
+    if (!route.scenarioId || !currentSessionId) return;
+    if (!id || id === EMPTY_SELECTION) return;
+    if (id === sessionMetadata.summary_profile_id) return;
+    try {
+      const payload = await updateSessionSettings(route.scenarioId, currentSessionId, { summary_profile_id: id });
+      sessionMetadata = payload.session || sessionMetadata;
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : translateNow("session.profileUpdateError");
+    }
+  }
+
   $: currentRouteKey = `${route.scenarioId || ""}:${route.sessionId || ""}`;
   $: if (currentRouteKey && currentRouteKey !== loadedKey) {
     void initialize(currentRouteKey);
@@ -423,6 +459,7 @@
         loadTimeline(route.scenarioId, currentSessionId),
         loadState(route.scenarioId, currentSessionId)
       ]);
+      await resumePendingJobs(route.scenarioId, currentSessionId);
       applyBranchEditPreset(route.scenarioId, currentSessionId);
     } catch (caught) {
       error = caught instanceof Error ? caught.message : translateNow("session.loadSessionError");
@@ -570,9 +607,11 @@
     turnNotice = "";
     newMessageBadge = false;
     sending = true;
+    turnJobPolling = false;
     const useStream = $preferences.streamEnabled;
     messages = appendPendingTurnMessages(messages, userMessage, useStream);
     let streamFinalReceived = false;
+    let postprocessPending = false;
     try {
       if (useStream) {
         await sendTurnStream(scenarioId, sessionId, userMessage, {
@@ -599,16 +638,18 @@
       } else {
         const payload = await sendTurn(scenarioId, sessionId, userMessage, {
           signal: controller.signal,
-          stream: false
+          stream: false,
+          async: true,
+          deferPostprocess: true
         });
-        const turn = payload.turn;
-        messages = finalizeTurnMessages(messages, userMessage, turn, false);
-        turnNotice = formatPostTurnNotice(turn);
-        await Promise.all([loadState(scenarioId, sessionId), loadTimeline(scenarioId, sessionId)]);
-        if (sessionModal === "settings") {
-          await Promise.all([loadPromptPreview(scenarioId, sessionId), loadRagStatus(scenarioId)]);
+        const job = payload.turn_job;
+        if (turnAbortController === controller) {
+          turnAbortController = null;
         }
-        newMessageBadge = true;
+        if (!job || typeof job.turn_id !== "string") {
+          throw new Error(translateNow("session.turnJobMissing"));
+        }
+        await pollTurnJob(scenarioId, sessionId, job.turn_id, userMessage);
       }
     } catch (caught) {
       if (isAbortError(caught)) {
@@ -625,15 +666,95 @@
         turnAbortController = null;
         sending = false;
       }
-      if (!useStream) {
+      if (!useStream && !postprocessPending) {
         stateUpdating = false;
       }
+    }
+  }
+
+  /**
+   * @param {string} scenarioId
+   * @param {string} sessionId
+   */
+  async function resumePendingJobs(scenarioId, sessionId) {
+    const payload = await getSessionDetail(scenarioId, sessionId);
+    const pendingTurn = payload.pending_turn;
+    const pendingPostprocess = payload.pending_postprocess;
+    if (pendingTurn && typeof pendingTurn.turn_id === "string") {
+      sending = true;
+      turnNotice = translateNow("session.resumePendingTurn");
+      void pollTurnJob(scenarioId, sessionId, pendingTurn.turn_id);
+      return;
+    }
+    if (pendingPostprocess && typeof pendingPostprocess.job_id === "string") {
+      stateUpdating = true;
+      turnNotice = translateNow("session.resumePendingPostprocess");
+      void handlePostTurnResult(scenarioId, sessionId, { postprocess_job: pendingPostprocess });
     }
   }
 
   /** @param {string} delta */
   function appendStreamingDelta(delta) {
     messages = appendStreamingDeltaToMessages(messages, delta);
+  }
+
+  /**
+   * @param {string} scenarioId
+   * @param {string} sessionId
+   * @param {string} turnId
+   * @param {string} [userMessage]
+   */
+  async function pollTurnJob(scenarioId, sessionId, turnId, userMessage = "") {
+    clearTurnPollTimer();
+    sending = true;
+    turnJobPolling = true;
+    for (let attempt = 0; attempt < 240; attempt += 1) {
+      try {
+        const payload = await getTurnJob(scenarioId, sessionId, turnId);
+        const job = payload.turn_job || {};
+        if (job.status === "completed") {
+          const result = job.result || {};
+          const turn = result.turn || result;
+          const postprocessJob = result.postprocess_job;
+          sending = false;
+          turnJobPolling = false;
+          newMessageBadge = true;
+          if (userMessage && turn && typeof turn === "object") {
+            messages = finalizeTurnMessages(messages, userMessage, turn, false);
+          } else {
+            await loadLog(scenarioId, sessionId);
+          }
+          await loadTimeline(scenarioId, sessionId);
+          if (postprocessJob && typeof postprocessJob.job_id === "string") {
+            stateUpdating = true;
+            await handlePostTurnResult(scenarioId, sessionId, { postprocess_job: postprocessJob });
+          } else {
+            turnNotice = formatPostTurnNotice(turn);
+            await loadState(scenarioId, sessionId);
+          }
+          if (sessionModal === "settings") {
+            await Promise.all([loadPromptPreview(scenarioId, sessionId), loadRagStatus(scenarioId)]);
+          }
+          return;
+        }
+        if (job.status === "failed") {
+          const message = job.error?.message ? String(job.error.message) : translateNow("session.sendError");
+          error = message;
+          sending = false;
+          turnJobPolling = false;
+          return;
+        }
+      } catch (caught) {
+        turnNotice = caught instanceof Error ? caught.message : translateNow("session.turnJobCheckError");
+        sending = false;
+        turnJobPolling = false;
+        return;
+      }
+      await waitForTurnPoll(1000);
+    }
+    turnNotice = translateNow("session.turnJobPending");
+    sending = false;
+    turnJobPolling = false;
   }
 
   /**
@@ -704,6 +825,23 @@
     }
   }
 
+  /** @param {number} delayMs */
+  function waitForTurnPoll(delayMs) {
+    return new Promise((resolve) => {
+      turnPollTimer = setTimeout(() => {
+        turnPollTimer = null;
+        resolve(undefined);
+      }, delayMs);
+    });
+  }
+
+  function clearTurnPollTimer() {
+    if (turnPollTimer) {
+      clearTimeout(turnPollTimer);
+      turnPollTimer = null;
+    }
+  }
+
   /** @param {Record<string, any> | null | undefined} result */
   function formatPostTurnNotice(result) {
     if (!result || typeof result !== "object") return "";
@@ -736,6 +874,7 @@
 
   onDestroy(() => {
     abortPendingTurn("destroy");
+    clearTurnPollTimer();
     clearPostprocessPollTimer();
   });
 
@@ -912,14 +1051,13 @@
 
     try {
       if ($preferences.streamEnabled) {
-        const baseContent = typeof message.content === "string" ? message.content : "";
         let appendedContent = "";
 
         await continueTurnStream(route.scenarioId, currentSessionId, message.turn, {
           signal: turnAbortController.signal,
           onDelta: (delta) => {
             appendedContent += delta;
-            messages = updateRegeneratingAssistantMessage(messages, message.turn, baseContent + appendedContent);
+            messages = updateStreamingContinuedAssistantMessage(messages, message.turn, appendedContent);
             tick().then(scrollToBottom);
           }
         });
@@ -1022,7 +1160,7 @@
     if (route.scenarioId && currentSessionId) {
       void loadPromptPreview(route.scenarioId, currentSessionId);
       void loadRagStatus(route.scenarioId);
-      void loadMemoryList(route.scenarioId);
+      void loadMemoryList(route.scenarioId, currentSessionId);
       void loadPins(route.scenarioId, currentSessionId);
     }
   }
@@ -1131,13 +1269,16 @@
     }
   }
 
-  /** @param {string} scenarioId */
-  async function loadMemoryList(scenarioId) {
+  /**
+   * @param {string} scenarioId
+   * @param {string} sessionId
+   */
+  async function loadMemoryList(scenarioId, sessionId, preferredPath = "") {
     memoryLoading = true;
     memoryError = "";
     try {
-      memoryList = await listScenarioMemory(scenarioId);
-      activeMemoryPath = firstMemoryItem()?.path || "";
+      memoryList = await listScenarioMemory(scenarioId, sessionId);
+      activeMemoryPath = findMemoryItem(preferredPath)?.path || firstMemoryItem()?.path || "";
     } catch (caught) {
       memoryError = caught instanceof Error ? caught.message : translateNow("session.memoryListError");
       memoryList = null;
@@ -1158,7 +1299,9 @@
       const payload = await rebuildScenarioRagIndex(route.scenarioId);
       ragRebuildMessage = translateNow("session.ragRebuildDone", { count: payload.index?.document_count ?? 0 });
       await loadRagStatus(route.scenarioId);
-      await loadMemoryList(route.scenarioId);
+      if (currentSessionId) {
+        await loadMemoryList(route.scenarioId, currentSessionId);
+      }
     } catch (caught) {
       ragStatusError = caught instanceof Error ? caught.message : translateNow("session.ragRebuildError");
     } finally {
@@ -1181,14 +1324,46 @@
     return null;
   }
 
-  function activeMemoryItem() {
+  /** @param {string} path */
+  function findMemoryItem(path) {
+    if (!path) return null;
     const groups = memoryGroups();
     for (const items of Object.values(groups)) {
       if (!Array.isArray(items)) continue;
-      const found = items.find((item) => item.path === activeMemoryPath);
+      const found = items.find((item) => item.path === path);
       if (found) return found;
     }
-    return firstMemoryItem();
+    return null;
+  }
+
+  function activeMemoryItem() {
+    return findMemoryItem(activeMemoryPath) || firstMemoryItem();
+  }
+
+  /**
+   * @param {Record<string, any> | null} memoryItem
+   * @param {string} status
+   */
+  async function updateMemoryStatus(memoryItem, status) {
+    if (!route.scenarioId || !currentSessionId || !memoryItem || memoryStatusSaving) return;
+    const parts = String(memoryItem.path || "").split("/");
+    const kind = parts[1] || "";
+    const filename = parts[2] || "";
+    const memoryId = filename.replace(/\.md$/, "");
+    if (!kind || !memoryId) return;
+    memoryStatusSaving = true;
+    memoryError = "";
+    memoryStatusMessage = "";
+    try {
+      await updateMemoryMetadata(route.scenarioId, kind, memoryId, { status });
+      memoryStatusMessage = translateNow("settings.memoryStatusSaved");
+      await loadMemoryList(route.scenarioId, currentSessionId, memoryItem.path);
+      await loadRagStatus(route.scenarioId);
+    } catch (caught) {
+      memoryError = caught instanceof Error ? caught.message : translateNow("settings.memoryStatusError");
+    } finally {
+      memoryStatusSaving = false;
+    }
   }
 
   /** @param {string | undefined} sourcePath */
@@ -1489,7 +1664,14 @@
                   <div class="message-bubble">
                     <header>
                       <span>{message.role === "assistant" ? "GM" : userLabel}</span>
-                      <span>{message.turn ? `Turn ${message.turn}` : ""}</span>
+                      <span class="message-meta-line">
+                        {#if message.turn}
+                          <span>Turn {message.turn}</span>
+                        {/if}
+                        {#if message.role === "assistant" && formatResponseDuration(message)}
+                          <span title="LLM response time">{formatResponseDuration(message)}</span>
+                        {/if}
+                      </span>
                     </header>
                     {#if editMessageTurn === message.turn && editMessageRole === message.role}
                       <div class="message-editor" style="margin-top: 8px;">
@@ -1635,7 +1817,7 @@
             {:else}
               <p class="notice">{$t("session.noLog")}</p>
             {/if}
-            {#if sending && !$preferences.streamEnabled}
+            {#if sending && (!$preferences.streamEnabled || turnJobPolling)}
               <div class="inline-loading-indicator" aria-label={$t("session.generatingResponse")}>
                 <Wand2 size={16} aria-hidden="true" />
                 <span>{$t("session.generatingResponse")}</span>
@@ -1751,7 +1933,12 @@
   </section>
 
   {#if $pickerState.kind}
-    <PersonaProfilePickerModal {pickerState} {selection} />
+    <PersonaProfilePickerModal
+      {pickerState}
+      {selection}
+      onChooseRpProfile={handleSessionRpProfileChange}
+      onChooseStateProfile={handleSessionStateProfileChange}
+    />
   {/if}
 
   {#if sessionModal}
@@ -1813,6 +2000,7 @@
         {:else}
           <SessionSettingsModal
             scenarioId={route.scenarioId || ""}
+            sessionId={currentSessionId || ""}
             bind:sessionNoteDraft
             bind:sceneNoteDraft
             bind:activeMemoryPath
@@ -1838,8 +2026,11 @@
             {memoryLoading}
             {memoryError}
             {memoryList}
+            {memoryStatusSaving}
+            {memoryStatusMessage}
             {selectedMemoryItem}
             {loadMemoryList}
+            {updateMemoryStatus}
           />
         {/if}
       </div>

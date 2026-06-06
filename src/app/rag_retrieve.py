@@ -42,6 +42,50 @@ JAPANESE_STOP_TERMS = frozenset(
 
 _MEMORY_RECENCY_MAX_BONUS = 20
 _MEMORY_RECENCY_WINDOW_DAYS = 30
+_MEMORY_INACTIVE_STATUSES = frozenset({"resolved", "superseded", "archived"})
+_MEMORY_STALE_SCORE_PENALTY = -20
+_MEMORY_LAST_SEEN_MAX_BONUS = 15
+_MEMORY_LAST_SEEN_WINDOW_TURNS = 24
+
+
+def _validate_type_limits(limits: dict[str, int] | None) -> None:
+    """Validate optional per-type count limits for the RAG node.
+
+    Backward compatible: ``None`` is valid and means "no per-type override".
+    """
+    if limits is None:
+        return
+    if not isinstance(limits, dict):
+        raise RagRetrieveError("RAG limits must be an object mapping type to a non-negative integer")
+    for key, value in limits.items():
+        if not isinstance(key, str) or not key.strip():
+            raise RagRetrieveError("RAG limits keys must be non-empty strings")
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise RagRetrieveError("RAG limits values must be non-negative integers")
+
+
+def _select_with_type_limits(
+    results: list[dict[str, Any]],
+    *,
+    limits: dict[str, int],
+    fallback_limit: int,
+) -> list[dict[str, Any]]:
+    """Apply a per-type count cap to score-sorted results.
+
+    - cap only (no floor / no reservation): keep a result while its type's running
+      count is below the cap.
+    - score-gated: callers pass only score>0 results, so unmatched types stay empty.
+    - types absent from ``limits`` fall back to ``fallback_limit`` (the shared limit).
+    """
+    counts: dict[str, int] = {}
+    selected: list[dict[str, Any]] = []
+    for result in results:
+        result_type = result_budget_type(result)
+        cap = limits.get(result_type, fallback_limit)
+        if counts.get(result_type, 0) < cap:
+            selected.append(result)
+            counts[result_type] = counts.get(result_type, 0) + 1
+    return selected
 
 
 def retrieve_context(
@@ -54,13 +98,17 @@ def retrieve_context(
     embedding_config: EmbeddingConfig | None = None,
     exclude_paths: set[str] | None = None,
     character_match_mode: str = "exact",
+    limits: dict[str, int] | None = None,
+    allowed_session_ids: set[str] | None = None,
+    current_turn: int | None = None,
 ) -> list[dict[str, Any]]:
     """Retrieve relevant documents using keyword search, optionally blended with vector search."""
     if not is_locus_id(scenario_id):
         raise RagRetrieveError(f"Invalid scenario id: {scenario_id}")
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
         raise RagRetrieveError("RAG limit must be a non-negative integer")
-    if limit == 0:
+    _validate_type_limits(limits)
+    if not limits and limit == 0:
         return []
 
     terms = query_terms(query)
@@ -72,6 +120,9 @@ def retrieve_context(
 
     if exclude_paths:
         documents = [doc for doc in documents if doc.source_path not in exclude_paths]
+    if allowed_session_ids is not None:
+        documents = _filter_memory_documents_by_session(documents, allowed_session_ids)
+    documents = _filter_searchable_memory_documents(documents)
 
     if not terms and not documents:
         return []
@@ -85,18 +136,54 @@ def retrieve_context(
             vector_sims,
             character_match_mode=character_match_mode,
             exact_query=exact_query,
+            current_turn=current_turn,
         )
     else:
         if not terms:
             return []
         scored = [
-            _score_document(document, terms, character_match_mode=character_match_mode, exact_query=exact_query)
+            _score_document(
+                document,
+                terms,
+                character_match_mode=character_match_mode,
+                exact_query=exact_query,
+                current_turn=current_turn,
+            )
             for document in documents
         ]
 
     results = [result for result in scored if result["score"] > 0]
     results.sort(key=lambda item: (-item["score"], item["source_path"], str(item.get("chunk_id") or "")))
+    if limits:
+        return _select_with_type_limits(results, limits=limits, fallback_limit=limit)
     return results[:limit]
+
+
+def _filter_memory_documents_by_session(
+    documents: list[RagDocument],
+    allowed_session_ids: set[str],
+) -> list[RagDocument]:
+    filtered: list[RagDocument] = []
+    for document in documents:
+        if _source_folder(document.source_path) != "memory":
+            filtered.append(document)
+            continue
+        session_id = document.metadata.get("session_id")
+        if not isinstance(session_id, str) or not session_id.strip():
+            filtered.append(document)
+            continue
+        if session_id in allowed_session_ids:
+            filtered.append(document)
+    return filtered
+
+
+def _filter_searchable_memory_documents(documents: list[RagDocument]) -> list[RagDocument]:
+    return [
+        document
+        for document in documents
+        if _source_folder(document.source_path) != "memory"
+        or _memory_status(document.metadata) not in _MEMORY_INACTIVE_STATUSES
+    ]
 
 
 def query_terms(query: str) -> list[str]:
@@ -165,6 +252,7 @@ def score_documents_hybrid(
     *,
     character_match_mode: str = "exact",
     exact_query: str = "",
+    current_turn: int | None = None,
 ) -> list[dict[str, Any]]:
     """Score documents using both keyword matching and vector similarity."""
     results: list[dict[str, Any]] = []
@@ -174,6 +262,7 @@ def score_documents_hybrid(
             terms,
             character_match_mode=character_match_mode,
             exact_query=exact_query,
+            current_turn=current_turn,
         )
         keyword_score = keyword_result["score"]
         v_sim = vector_sims.get(document_key(document), 0.0)
@@ -187,6 +276,9 @@ def score_documents_hybrid(
         elif v_sim >= VECTOR_MATCH_THRESHOLD:
             combined = (v_sim - VECTOR_MATCH_THRESHOLD) / (1.0 - VECTOR_MATCH_THRESHOLD) * VECTOR_ONLY_MAX_SCORE
             keyword_result = {**keyword_result, "content": _excerpt(document.body, []), "matched_terms": []}
+            if _source_folder(document.source_path) == "memory":
+                combined += _memory_metadata_score_adjustment(document.metadata)
+                combined += _memory_last_seen_score(document.metadata, current_turn)
         else:
             combined = 0.0
 
@@ -327,6 +419,7 @@ def _score_document(
     *,
     character_match_mode: str = "exact",
     exact_query: str = "",
+    current_turn: int | None = None,
 ) -> dict[str, Any]:
     is_character = _is_character_document(document)
     if is_character and character_match_mode != "fuzzy":
@@ -354,6 +447,8 @@ def _score_document(
     source_folder = _source_folder(document.source_path)
     if source_folder == "memory":
         score += _memory_recency_score(document.metadata)
+        score += _memory_metadata_score_adjustment(document.metadata)
+        score += _memory_last_seen_score(document.metadata, current_turn)
     content = document.body.strip() if is_character else _excerpt(document.body, matched_terms)
     return {
         "source_path": document.source_path,
@@ -475,6 +570,41 @@ def _memory_recency_score(metadata: dict[str, Any]) -> int:
     if age_days < 0:
         return 0
     return max(0, _MEMORY_RECENCY_MAX_BONUS - age_days)
+
+
+def _memory_metadata_score_adjustment(metadata: dict[str, Any]) -> int:
+    score = _memory_importance_score(metadata)
+    if _memory_status(metadata) == "stale":
+        score += _MEMORY_STALE_SCORE_PENALTY
+    return score
+
+
+def _memory_last_seen_score(metadata: dict[str, Any], current_turn: int | None) -> int:
+    if not isinstance(current_turn, int) or isinstance(current_turn, bool) or current_turn < 0:
+        return 0
+    value = metadata.get("last_seen_turn")
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0 or value > current_turn:
+        return 0
+    distance = current_turn - value
+    if distance > _MEMORY_LAST_SEEN_WINDOW_TURNS:
+        return 0
+    return max(0, _MEMORY_LAST_SEEN_MAX_BONUS - distance)
+
+
+def _memory_importance_score(metadata: dict[str, Any]) -> int:
+    value = metadata.get("importance")
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, (int, float)):
+        return max(0, min(100, int(value)))
+    return 0
+
+
+def _memory_status(metadata: dict[str, Any]) -> str:
+    value = metadata.get("status")
+    if not isinstance(value, str) or not value.strip():
+        return "active"
+    return value.strip().lower()
 
 
 def _has_significant_match(document: RagDocument, matched_terms: list[str]) -> bool:

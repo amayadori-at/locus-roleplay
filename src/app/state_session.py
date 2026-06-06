@@ -408,6 +408,58 @@ def delete_session(vault: Vault, scenario_id: str, session_id: str) -> None:
     if not session_dir.is_dir():
         raise StateSessionError(f"Session path is not a directory: {session_id}")
     shutil.rmtree(session_dir)
+    deleted_memory = delete_session_memory(vault, scenario_id, session_id)
+    if deleted_memory:
+        from app.memory_summarizer import mark_rag_index_stale
+
+        mark_rag_index_stale(vault, scenario_id, deleted_memory, reason="memory_files_deleted")
+
+
+def ancestor_session_ids(vault: Vault, scenario_id: str, session_id: str) -> list[str]:
+    _validate_id(scenario_id, "scenario")
+    _validate_id(session_id, "session")
+    chain: list[str] = []
+    seen: set[str] = set()
+    current: str | None = session_id
+    while current and current not in seen:
+        if not is_locus_id(current):
+            break
+        seen.add(current)
+        chain.append(current)
+        try:
+            metadata = read_session_metadata(vault, scenario_id, current)
+        except VaultError:
+            break
+        parent = metadata.get("parent_session_id")
+        current = parent if isinstance(parent, str) and parent else None
+    return chain
+
+
+def delete_session_memory(vault: Vault, scenario_id: str, session_id: str) -> list[str]:
+    _validate_id(scenario_id, "scenario")
+    _validate_id(session_id, "session")
+    memory_dir = vault.resolve(f"rp/scenarios/{scenario_id}/memory")
+    if not memory_dir.exists():
+        return []
+    if not memory_dir.is_dir():
+        raise StateSessionError("Scenario memory path is not a directory")
+
+    deleted: list[str] = []
+    for path in sorted(memory_dir.glob("**/*.md")):
+        try:
+            path.relative_to(memory_dir)
+        except ValueError as exc:
+            raise StateSessionError("Memory cleanup path escapes the scenario memory directory") from exc
+        vault_relative = path.relative_to(vault.root).as_posix()
+        try:
+            document = vault.load_markdown(vault_relative)
+        except VaultError:
+            continue
+        if document.frontmatter.get("session_id") != session_id:
+            continue
+        path.unlink()
+        deleted.append(path.relative_to(vault.resolve(f"rp/scenarios/{scenario_id}")).as_posix())
+    return deleted
 
 
 def write_session_metadata(vault: Vault, scenario_id: str, session_id: str, metadata: dict[str, Any]) -> None:

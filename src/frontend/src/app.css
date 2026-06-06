@@ -217,11 +217,97 @@ body {
   border-bottom: 1px solid var(--c-border);
 }
 
-.scenario-edit .source-tree .select-list {
+.scenario-edit .source-tree .select-list,
+.scenario-edit .source-groups {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   padding: 4px;
+}
+
+.source-filter {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+  padding: 8px;
+  border-bottom: 1px solid var(--c-border);
+}
+
+.source-filter .compact-input {
+  min-height: 32px;
+  border-radius: 6px;
+}
+
+.source-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.source-group {
+  display: grid;
+  gap: 2px;
+}
+
+.source-group-toggle {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 7px;
+  align-items: center;
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--c-text);
+  text-align: left;
+}
+
+.source-group-toggle:hover:not(:disabled) {
+  border-color: var(--c-border);
+  background: var(--c-surface-alt);
+}
+
+.source-group-toggle.empty {
+  opacity: 0.58;
+}
+
+.source-group-toggle strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-group-toggle span,
+.source-empty-copy {
+  color: var(--c-text-muted);
+  font-size: 12px;
+}
+
+.scenario-edit .source-tree .grouped-select-list,
+.source-tree .grouped-select-list {
+  flex: none;
+  min-height: auto;
+  overflow: visible;
+  padding: 0 0 2px 18px;
+}
+
+.grouped-select-list button {
+  border-radius: 6px;
+  padding: 7px 8px;
+}
+
+.grouped-select-list button span:first-of-type {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-empty-copy {
+  margin: 8px;
 }
 
 .scenario-edit .editor-panel {
@@ -2153,7 +2239,8 @@ button:hover {
   }
 
   /* select-list は source-tree がスクロールを担うので二重スクロール防止 */
-  .scenario-edit .source-tree .select-list {
+  .scenario-edit .source-tree .select-list,
+  .scenario-edit .source-groups {
     flex: none;
     overflow: visible;
     min-height: 0;
