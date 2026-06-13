@@ -8,7 +8,7 @@ Obsidian Vault をデータの正本として、ブラウザからロールプ�
 
 ## 本システムについて
 
-― 外部Wiki: https://locus-rp.playing.wiki
+- 外部Wiki: https://locus-rp.playing.wiki
 - Codex / Claude Code両方を使って仕様駆動開発を行っています。
 - Webフロント上でもプロンプトの編集は可能としており、LLMへ送信するプロンプトの組み立て順序も設定可能です。
   - プロンプトのノード順序や視覚的なノード操作はベータ版です。使い勝手やUI/UX上の不備などはフィードバックをください。
