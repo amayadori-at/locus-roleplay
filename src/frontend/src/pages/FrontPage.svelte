@@ -24,14 +24,17 @@
 
   /**
    * @type {{
-   *   openSession: (scenarioId: string, sessionId?: string) => void,
-   *   openScenarioEdit: (scenarioId: string, sourcePath?: string) => void
+   *   onNavigate?: {
+   *     openHome?: () => void,
+   *     openSession: (scenarioId: string, sessionId?: string) => void,
+   *     openScenarioEdit: (scenarioId: string, sourcePath?: string) => void,
+   *   }
    * }}
    */
-  export let onNavigate = {
+  let { onNavigate = {
     openSession: () => {},
     openScenarioEdit: () => {}
-  };
+  } } = $props();
 
   /**
    * @typedef {{
@@ -62,48 +65,44 @@
    */
 
   /** @type {Array<{ id: string, name?: string, description?: string, metadata?: Record<string, unknown> }>} */
-  let scenarios = [];
-  /** @type {{ id: string, name?: string, description?: string, metadata?: Record<string, unknown> } | null} */
-  let activeScenario = null;
-  /** @type {SessionSummary[]} */
-  let sessions = [];
-  /** @type {FlatSessionTreeNode[]} */
-  let sessionTree = [];
-  let selectedScenarioId = "";
-  let loadingScenarios = true;
-  let loadingSessions = false;
-  let descriptionModalOpen = false;
-  let scenarioError = "";
-  let sessionError = "";
-  let bulkDeleteMode = false;
-  let sessionTreeOpen = false;
+  let scenarios = $state([]);
+  let activeScenario = $state(/** @type {{ id: string, name?: string, description?: string, metadata?: Record<string, unknown> } | null} */ (null));
+  let sessions = $state(/** @type {SessionSummary[]} */ ([]));
+  let selectedScenarioId = $state("");
+  let loadingScenarios = $state(true);
+  let loadingSessions = $state(false);
+  let descriptionModalOpen = $state(false);
+  let scenarioError = $state("");
+  let sessionError = $state("");
+  let bulkDeleteMode = $state(false);
+  let sessionTreeOpen = $state(false);
   /** @type {Set<string>} */
-  let selectedSessionIds = new Set();
-  let renamingSessionId = "";
-  let renameDraft = "";
-  let sessionActionBusy = false;
-  let creatingScenario = false;
-  let createScenarioModalOpen = false;
-  let newScenarioId = "";
-  let newScenarioName = "";
-  let newScenarioDescription = "";
-  let createScenarioError = "";
-  let scenarioFilter = "";
-  let importingZip = false;
-  let exportingZip = false;
+  let selectedSessionIds = $state(new Set());
+  let renamingSessionId = $state("");
+  let renameDraft = $state("");
+  let sessionActionBusy = $state(false);
+  let creatingScenario = $state(false);
+  let createScenarioModalOpen = $state(false);
+  let newScenarioId = $state("");
+  let newScenarioName = $state("");
+  let newScenarioDescription = $state("");
+  let createScenarioError = $state("");
+  let scenarioFilter = $state("");
+  let importingZip = $state(false);
+  let exportingZip = $state(false);
 
-  $: filteredScenarios = scenarioFilter.trim()
+  const filteredScenarios = $derived(scenarioFilter.trim()
     ? scenarios.filter((s) => {
         const q = scenarioFilter.trim().toLowerCase();
         return s.id.includes(q) || (s.name || "").toLowerCase().includes(q);
       })
-    : scenarios;
+    : scenarios);
 
   onMount(async () => {
     await loadScenarios();
   });
 
-  $: sessionTree = buildSessionTree(sessions);
+  const sessionTree = $derived(buildSessionTree(sessions));
 
   async function loadScenarios() {
     loadingScenarios = true;

@@ -346,7 +346,6 @@ def _write_staged_memory_updates(staged: dict[str, tuple[Path, dict[str, Any], d
 
 
 def _apply_action(vault: Vault, scenario_id: str, action: dict[str, Any]) -> list[str]:
-    action_type = action.get("action")
     memory_path = _validate_memory_path(action.get("path"))
     path, metadata, body = _load_memory_file(vault, scenario_id, memory_path)
     before = dict(metadata)

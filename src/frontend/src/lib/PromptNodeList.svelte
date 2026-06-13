@@ -3,18 +3,26 @@
   import { t } from "./i18n.js";
   import { nodeSubText, nodeTypeBadge, nodeTypeCssClass } from "./promptGraphEditor.js";
 
-  /** @type {Array<Record<string, any>>} */
-  export let nodes = [];
-  export let selectedNodeId = "";
-  export let draggedNodeId = "";
-  export let dragTargetNodeId = "";
-  export let dragDropAfter = false;
-  /** @type {(nodeId: string) => void} */
-  export let selectNode = () => {};
-  /** @type {(nodeId: string, event: PointerEvent) => void} */
-  export let startNodeDrag = () => {};
-  /** @type {() => void} */
-  export let addNode = () => {};
+  /** @type {{
+   *   nodes?: Array<Record<string, any>>,
+   *   selectedNodeId?: string,
+   *   draggedNodeId?: string,
+   *   dragTargetNodeId?: string,
+   *   dragDropAfter?: boolean,
+   *   selectNode?: (nodeId: string) => void,
+   *   startNodeDrag?: (nodeId: string, event: PointerEvent) => void,
+   *   addNode?: () => void,
+   * }} */
+  let {
+    nodes = [],
+    selectedNodeId = "",
+    draggedNodeId = "",
+    dragTargetNodeId = "",
+    dragDropAfter = false,
+    selectNode = () => {},
+    startNodeDrag = () => {},
+    addNode = () => {}
+  } = $props();
 
   /** @param {string} nodeId */
   function activateNode(nodeId) {

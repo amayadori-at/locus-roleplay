@@ -20,20 +20,24 @@
     stateProfiles
   } from "./sessionSelection.js";
 
-  /** @type {any} store returned by createSessionPickerStore() */
-  export let pickerState;
-  /** @type {any} store returned by createSessionSelectionStore() */
-  export let selection;
-  /** @type {((id: string) => void) | null} 既存セッションの GM profile 変更を通知する任意コールバック */
-  export let onChooseRpProfile = null;
-  /** @type {((id: string) => void) | null} 既存セッションの state profile 変更を通知する任意コールバック */
-  export let onChooseStateProfile = null;
+  /** @type {{
+   *   pickerState: any,
+   *   selection: any,
+   *   onChooseRpProfile?: ((id: string) => void) | null,
+   *   onChooseStateProfile?: ((id: string) => void) | null,
+   * }} */
+  let {
+    pickerState,
+    selection,
+    onChooseRpProfile = null,
+    onChooseStateProfile = null
+  } = $props();
 
-  let defaultRpProfileId = getDefaultRpProfileId();
-  let defaultStateProfileId = getDefaultStateProfileId();
+  let defaultRpProfileId = $state(getDefaultRpProfileId());
+  let defaultStateProfileId = $state(getDefaultStateProfileId());
 
   // モーダルが開いたとき、使用中のアイテムをデフォルトで詳細表示する
-  $: {
+  $effect(() => {
     const kind = $pickerState.kind;
     const editId = $pickerState.editId;
     if (kind && !editId) {
@@ -45,7 +49,7 @@
         openProfileEdit($selection.selectedStateProfile);
       }
     }
-  }
+  });
 
   function close() {
     pickerState.close();

@@ -18,7 +18,6 @@ from app.api import ApiNotFound, ApiStreamResponse, handle_delete, handle_get, h
 from app.env import load_env_file
 from app.vault import Vault, VaultPathError
 
-WEB_DIR = ROOT_DIR / "web"
 FRONTEND_DIST_DIR = _src_dir / "frontend" / "dist"
 
 
@@ -74,7 +73,7 @@ class LocusStaticHandler(SimpleHTTPRequestHandler):
     def _handle_api_get(self) -> None:
         try:
             response = handle_get(self.path, Vault.from_env())
-        except VaultPathError as exc:
+        except VaultPathError:
             self._send_bytes(500, b'{"error":"vault_not_configured"}', "application/json; charset=utf-8")
             return
         except ApiNotFound:
@@ -179,7 +178,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--static-dir",
         default=None,
-        help="Directory for frontend static files. Defaults to LOCUS_STATIC_DIR, frontend/dist when built, then web/.",
+        help="Directory for frontend static files. Defaults to LOCUS_STATIC_DIR, then frontend/dist.",
     )
     return parser.parse_args()
 
@@ -191,9 +190,7 @@ def choose_static_dir(value: str | None = None) -> Path:
         if not path.is_absolute():
             path = ROOT_DIR / path
         return path.resolve()
-    if (FRONTEND_DIST_DIR / "index.html").is_file():
-        return FRONTEND_DIST_DIR
-    return WEB_DIR
+    return FRONTEND_DIST_DIR
 
 
 def main() -> None:

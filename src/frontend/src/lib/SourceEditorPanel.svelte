@@ -1,19 +1,36 @@
 <script>
   import { Maximize2, RotateCcw, Save, Trash2 } from "lucide-svelte";
 
-  export let selectedPath = "";
-  export let loadingFile = false;
-  export let sourceDirty = false;
-  export let sourceMessage = "";
-  export let savingSource = false;
-  export let deletingSource = false;
-  export let sourceContent = "";
-  export let saveSourceFile = () => {};
-  export let resetSourceEdits = () => {};
-  export let deleteSourceFile = () => {};
-  export let canDeleteSelectedSource = () => false;
-  export let updateSourceDraft = (/** @type {Event} */ _event) => {};
-  export let expandSourceEditor = () => {};
+  /** @type {{
+   *   selectedPath?: string,
+   *   loadingFile?: boolean,
+   *   sourceDirty?: boolean,
+   *   sourceMessage?: string,
+   *   savingSource?: boolean,
+   *   deletingSource?: boolean,
+   *   sourceContent?: string,
+   *   saveSourceFile?: () => void,
+   *   resetSourceEdits?: () => void,
+   *   deleteSourceFile?: () => void,
+   *   canDeleteSelectedSource?: () => boolean,
+   *   updateSourceDraft?: (event: Event) => void,
+   *   expandSourceEditor?: () => void,
+   * }} */
+  let {
+    selectedPath = "",
+    loadingFile = false,
+    sourceDirty = false,
+    sourceMessage = "",
+    savingSource = false,
+    deletingSource = false,
+    sourceContent = "",
+    saveSourceFile = () => {},
+    resetSourceEdits = () => {},
+    deleteSourceFile = () => {},
+    canDeleteSelectedSource = () => false,
+    updateSourceDraft = (_event) => {},
+    expandSourceEditor = () => {}
+  } = $props();
 </script>
 
 {#if loadingFile}

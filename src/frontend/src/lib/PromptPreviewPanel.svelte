@@ -1,23 +1,36 @@
 <script>
   import { Play } from "lucide-svelte";
 
-  export let loadingPreviewChoices = false;
-  export let loadingPromptPreview = false;
-  export let promptPreviewError = "";
-  /** @type {Record<string, any> | null} */
-  export let promptPreview = null;
-  /** @type {Array<Record<string, any>>} */
-  export let sessions = [];
-  /** @type {Array<Record<string, any>>} */
-  export let personas = [];
-  export let previewSessionId = "";
-  export let previewPersonaId = "";
-  export let previewProfileId = "";
-  export let previewUserMessage = "";
-  /** @type {() => Array<Record<string, any>>} */
-  export let roleplayProfiles = () => [];
-  export let runPromptPreview = () => {};
-  export let compact = false;
+  /** @type {{
+   *   loadingPreviewChoices?: boolean,
+   *   loadingPromptPreview?: boolean,
+   *   promptPreviewError?: string,
+   *   promptPreview?: Record<string, any> | null,
+   *   sessions?: Array<Record<string, any>>,
+   *   personas?: Array<Record<string, any>>,
+   *   previewSessionId?: string,
+   *   previewPersonaId?: string,
+   *   previewProfileId?: string,
+   *   previewUserMessage?: string,
+   *   roleplayProfiles?: () => Array<Record<string, any>>,
+   *   runPromptPreview?: () => void,
+   *   compact?: boolean,
+   * }} */
+  let {
+    loadingPreviewChoices = false,
+    loadingPromptPreview = false,
+    promptPreviewError = "",
+    promptPreview = null,
+    sessions = [],
+    personas = [],
+    previewSessionId = $bindable(""),
+    previewPersonaId = $bindable(""),
+    previewProfileId = $bindable(""),
+    previewUserMessage = $bindable(""),
+    roleplayProfiles = () => [],
+    runPromptPreview = () => {},
+    compact = false
+  } = $props();
 
   function promptPreviewJson() {
     return JSON.stringify(promptPreview?.messages || [], null, 2);

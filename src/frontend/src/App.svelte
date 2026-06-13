@@ -27,10 +27,9 @@
    * @typedef {{ backend: "ok" | "error", vault?: VaultStatus } | null} HealthStatus
    */
 
-  /** @type {HealthStatus} */
-  let health = null;
-  let healthLoading = true;
-  let mobileSidebarOpen = false;
+  let health = $state(/** @type {HealthStatus} */ (null));
+  let healthLoading = $state(true);
+  let mobileSidebarOpen = $state(false);
 
   const VAULT_DIR_LABELS = {
     "rp/scenarios": "scenarios",

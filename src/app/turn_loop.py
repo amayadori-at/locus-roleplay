@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-import json
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Protocol
 
-from app.loaders import ModelProfile, Persona, Scenario, load_profile, load_scenario
+from app.loaders import ModelProfile, Scenario, load_profile, load_scenario
 from app.images import Segment, parse_image_markers
-from app.messages import is_conversation_role
 from app.model_client import ChatCompletionResult
 from app.prompt_preview import compose_prompt_graph
-from app.reasoning import remove_reasoning_blocks as _remove_reasoning_blocks
 from app.reasoning import sanitize_log_entries, strip_reasoning_blocks as _strip_reasoning_blocks
 from app.state_session import (
     append_session_log,
@@ -45,16 +42,6 @@ class StreamingChatCompletionClient(ChatCompletionClient, Protocol):
 
 
 @dataclass(frozen=True)
-class PromptContext:
-    scenario: Scenario
-    persona: Persona
-    profile: ModelProfile
-    state: dict[str, Any]
-    recent_log: list[dict[str, Any]]
-    user_note: str = ""
-
-
-@dataclass(frozen=True)
 class TurnResult:
     session_id: str
     scenario_id: str
@@ -79,38 +66,6 @@ class TurnPreparation:
     prompt: dict[str, Any]
     messages: list[dict[str, str]]
     turn: int
-
-
-def compose_gm_messages(context: PromptContext, user_message: str) -> list[dict[str, str]]:
-    if not isinstance(user_message, str) or not user_message.strip():
-        raise TurnLoopError("user_message must be a non-empty string")
-
-    system_content = "\n\n".join(
-        section
-        for section in (
-            _section("System Prompt", context.scenario.system_prompt),
-            _section("GM Policy", context.scenario.gm_system),
-            _section("Narration Policy", context.scenario.narration_policy),
-            _section("Scenario", _scenario_text(context.scenario)),
-            _section("User Persona", _persona_text(context.persona)),
-            _section("Session User Note", context.user_note),
-            _section("Current State", _state_text(context.state)),
-            _section("Relevant Characters", ""),
-            _section("Relevant Lore", ""),
-            _section("Relevant Memory", ""),
-            _section("Image Policy", _image_policy_text(context.scenario)),
-        )
-        if section
-    )
-
-    messages = [{"role": "system", "content": system_content}]
-    for entry in context.recent_log:
-        role = entry.get("role")
-        content = entry.get("content")
-        if is_conversation_role(role) and isinstance(content, str) and content:
-            messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": user_message})
-    return messages
 
 
 def run_gm_turn(
@@ -376,45 +331,6 @@ def run_gm_post_turn(
         user_message=user_message,
         assistant_content=postprocess_content,
         state_model_client=state_model_client,
-    )
-
-
-def _section(title: str, content: str) -> str:
-    stripped = content.strip()
-    if not stripped:
-        return ""
-    return f"## {title}\n{stripped}"
-
-
-def _scenario_text(scenario: Scenario) -> str:
-    parts = [f"ID: {scenario.id}", f"Name: {scenario.name}"]
-    if scenario.body.strip():
-        parts.append(scenario.body.strip())
-    return "\n".join(parts)
-
-
-def _persona_text(persona: Persona) -> str:
-    parts = [f"ID: {persona.id}", f"Name: {persona.name}"]
-    if persona.body.strip():
-        parts.append(persona.body.strip())
-    return "\n".join(parts)
-
-
-def _state_text(state: dict[str, Any]) -> str:
-    return json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True)
-
-
-def _image_policy_text(scenario: Scenario) -> str:
-    image_enabled = scenario.metadata.get("image_enabled")
-    image_mode = scenario.metadata.get("image_mode")
-    if image_enabled is not True:
-        return ""
-    if scenario.image_policy.strip():
-        return scenario.image_policy
-    return json.dumps(
-        {"image_enabled": image_enabled, "image_mode": image_mode},
-        ensure_ascii=False,
-        sort_keys=True,
     )
 
 

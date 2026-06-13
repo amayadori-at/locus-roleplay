@@ -4,49 +4,77 @@
   import { t, translateNow } from "./i18n.js";
   import { formatHeadingPath, formatMatchedTerms, groupedRagSources } from "./ragSources.js";
 
-  export let scenarioId = "";
-  export let sessionId = "";
-  export let sessionNoteDraft = "";
-  export let sceneNoteDraft = "";
-  export let settingsSaving = false;
-  export let settingsMessage = "";
-  export let saveSessionSettings = () => {};
-  export let pinsLoading = false;
-  export let pinsSaving = false;
-  export let pinsMessage = "";
-  /** @type {Record<string, any> | null} */
-  export let pinsData = null;
-  export let toggleMod = (/** @type {string} */ _path) => {};
-  export let togglePinnedCharacter = (/** @type {string} */ _path) => {};
-  export let promptPreviewLoading = false;
-  export let promptPreviewError = "";
-  /** @type {Record<string, any> | null} */
-  export let promptPreview = null;
-  export let openRagSource = (/** @type {string} */ _path) => {};
-  export let ragStatusLoading = false;
-  export let ragStatusError = "";
-  /** @type {Record<string, any> | null} */
-  export let ragStatus = null;
-  export let ragRebuildRunning = false;
-  export let ragRebuildMessage = "";
-  export let rebuildRagIndex = () => {};
-  export let memoryLoading = false;
-  export let memoryError = "";
-  /** @type {Record<string, any> | null} */
-  export let memoryList = null;
-  export let memoryStatusSaving = false;
-  export let memoryStatusMessage = "";
-  export let activeMemoryPath = "";
-  /** @type {Record<string, any> | null} */
-  export let selectedMemoryItem = null;
-  export let loadMemoryList = (/** @type {string} */ _scenarioId, /** @type {string} */ _sessionId) => {};
-  export let updateMemoryStatus = (/** @type {Record<string, any>} */ _item, /** @type {string} */ _status) => {};
+  /** @type {{
+   *   scenarioId?: string,
+   *   sessionId?: string,
+   *   sessionNoteDraft?: string,
+   *   sceneNoteDraft?: string,
+   *   settingsSaving?: boolean,
+   *   settingsMessage?: string,
+   *   saveSessionSettings?: () => void,
+   *   pinsLoading?: boolean,
+   *   pinsSaving?: boolean,
+   *   pinsMessage?: string,
+   *   pinsData?: Record<string, any> | null,
+   *   toggleMod?: (path: string) => void,
+   *   togglePinnedCharacter?: (path: string) => void,
+   *   promptPreviewLoading?: boolean,
+   *   promptPreviewError?: string,
+   *   promptPreview?: Record<string, any> | null,
+   *   openRagSource?: (path: string) => void,
+   *   ragStatusLoading?: boolean,
+   *   ragStatusError?: string,
+   *   ragStatus?: Record<string, any> | null,
+   *   ragRebuildRunning?: boolean,
+   *   ragRebuildMessage?: string,
+   *   rebuildRagIndex?: () => void,
+   *   memoryLoading?: boolean,
+   *   memoryError?: string,
+   *   memoryList?: Record<string, any> | null,
+   *   memoryStatusSaving?: boolean,
+   *   memoryStatusMessage?: string,
+   *   activeMemoryPath?: string,
+   *   selectedMemoryItem?: Record<string, any> | null,
+   *   loadMemoryList?: (scenarioId: string, sessionId: string) => void,
+   *   updateMemoryStatus?: (item: Record<string, any>, status: string) => void,
+   * }} */
+  let {
+    scenarioId = "",
+    sessionId = "",
+    sessionNoteDraft = $bindable(""),
+    sceneNoteDraft = $bindable(""),
+    settingsSaving = false,
+    settingsMessage = "",
+    saveSessionSettings = () => {},
+    pinsLoading = false,
+    pinsSaving = false,
+    pinsMessage = "",
+    pinsData = null,
+    toggleMod = (_path) => {},
+    togglePinnedCharacter = (_path) => {},
+    promptPreviewLoading = false,
+    promptPreviewError = "",
+    promptPreview = null,
+    openRagSource = (_path) => {},
+    ragStatusLoading = false,
+    ragStatusError = "",
+    ragStatus = null,
+    ragRebuildRunning = false,
+    ragRebuildMessage = "",
+    rebuildRagIndex = () => {},
+    memoryLoading = false,
+    memoryError = "",
+    memoryList = null,
+    memoryStatusSaving = false,
+    memoryStatusMessage = "",
+    activeMemoryPath = $bindable(""),
+    selectedMemoryItem = null,
+    loadMemoryList = (_scenarioId, _sessionId) => {},
+    updateMemoryStatus = (_item, _status) => {}
+  } = $props();
 
   const memoryStatusOptions = ["active", "resolved", "superseded", "stale", "archived"];
-  /** @type {Record<string, any> | null} */
-  let currentMemoryItem = null;
-
-  $: currentMemoryItem = resolveMemoryItem(memoryList, activeMemoryPath) || selectedMemoryItem;
+  const currentMemoryItem = $derived(resolveMemoryItem(memoryList, activeMemoryPath) || selectedMemoryItem);
 
   function requestPayloadJson() {
     return JSON.stringify(promptPreview?.prompt?.request_payload || {}, null, 2);

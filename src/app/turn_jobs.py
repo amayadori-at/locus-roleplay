@@ -10,7 +10,7 @@ from app.ids import is_locus_id
 from app.postprocess_jobs import start_postprocess_job
 from app.state_session import read_session_metadata
 from app.turn_payloads import turn_result_payload
-from app.turn_loop import ChatCompletionClient, TurnResult, finalize_gm_turn_fast, prepare_gm_turn, run_gm_turn
+from app.turn_loop import ChatCompletionClient, finalize_gm_turn_fast, prepare_gm_turn, run_gm_turn
 from app.vault import Vault, VaultError
 
 

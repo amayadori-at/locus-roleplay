@@ -35,7 +35,6 @@ from app.rag_index import (
 import app.rag_retrieve as _rag_retrieve
 from app.rag_retrieve import (
     VECTOR_MATCH_THRESHOLD,
-    VECTOR_ONLY_MAX_SCORE,
     RagRetrieveError,
     embedding_text_for_document as _retrieve_embedding_text,
     query_terms as _retrieve_query_terms,
@@ -51,6 +50,17 @@ from app.rag_vectors import (
 )
 import app.rag_vectors as _rag_vectors
 from app.vault import Vault, VaultError
+
+# Facade re-exports: these names are imported from app.rag by prompt_preview,
+# the api package and tests, but are not referenced inside this module.
+__all__ = [
+    "DEFAULT_KEYWORD_TRIGGER_TOKEN_BUDGET",
+    "DEFAULT_RAG_TOKEN_BUDGET",
+    "DEFAULT_RAG_TYPE_TOKEN_BUDGETS",
+    "VECTOR_MATCH_THRESHOLD",
+    "budget_rag_results",
+    "format_rag_results",
+]
 
 
 class RagError(VaultError):

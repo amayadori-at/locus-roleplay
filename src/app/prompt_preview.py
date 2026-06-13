@@ -14,7 +14,6 @@ from app.rag import (
     build_rag_query,
     format_rag_results,
     keyword_triggered_lore_results,
-    load_scenario_file,
     retrieve_context,
     session_memory_results,
 )

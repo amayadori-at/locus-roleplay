@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Locus RP">
+  <rect x="1" y="1" width="62" height="62" rx="14" fill="#f4f0e7" stroke="#d8d0c0" stroke-width="2"/>
+  <path
+    d="M25 16 V45 H40"
+    fill="none"
+    stroke="#3f635d"
+    stroke-width="8"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <circle cx="44" cy="45" r="6.5" fill="#5a9e96"/>
+</svg>

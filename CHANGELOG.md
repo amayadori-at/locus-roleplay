@@ -1,5 +1,31 @@
 # CHANGELOG
 
+## v1.2.5 (2026-06-13)
+
+### 新機能
+
+- favicon を追加 — ブラウザタブやブックマークに Locus RP 専用アイコンが表示されるようになった
+
+### バグ修正
+
+- 一部の API でエラー応答の生成に失敗していた問題を修正 — 共通のエラー応答ヘルパが未定義のまま参照されており、該当する不正リクエスト・未検出・競合の経路でエラーを正しく返せなかった。`bad_request` / `not_found` / `conflict` を返すよう修正
+
+### 内部改善（リファクタリング）
+
+- backend の API 実装を単一ファイルから `app/api` パッケージへ分割 — common / assets / personas_profiles / prompt_graphs / rag_memory / scenarios / sessions / turns / router に整理し、機能ドメインごとに見通しを改善（外部から見た API の振る舞いは不変）
+- 巨大化していた backend テストをドメイン別ファイルへ分割 — `test_api.py` を personas_profiles / prompt_graphs / rag_memory / scenarios / sessions / turns に再編し、共通ヘルパを `api_test_helpers.py` に集約
+- frontend の画面コンポーネントを分割 — Scenario Editor を Prompt / Knowledge / SourceTree タブへ、Session 画面を Sidebar / ChatPanel へ切り出し、各ページの責務を整理
+- ターン処理ロジックを `turnEngine.svelte.js` として Session 画面から分離 — 通常応答・ストリーミング・再生成・後処理の流れを独立モジュール化し、対応するターンフローのテストを追加
+- frontend 全コンポーネントを Svelte 5 runes 形式へ移行し、プロジェクト全体で runes mode を強制 — 旧来のリアクティブ構文を統一
+- 使われなくなった固定順序プロンプト合成（`compose_gm_messages` / `PromptContext`）を削除 — 実ターンは Prompt Graph 経由の合成に一本化済み。あわせて backend の未使用 import / 変数を整理
+
+### 互換性メモ
+
+- 既存セッションログ・State・Prompt Graph・Memory Markdown・シナリオデータは引き続き読み込み可能（Vault データ形式に変更なし）
+- 旧静的UI（`web/` 配下の HTML / JS / CSS）を削除 — 現行フロントエンドは `src/frontend/` の Svelte アプリに完全移行済みのため、利用上の影響はない
+
+---
+
 ## v1.2.4 (2026-06-06)
 
 ### 新機能

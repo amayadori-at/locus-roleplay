@@ -106,10 +106,6 @@ image_enabled: true
 image_mode: inline
 missing_image_behavior: fallback_normal
 memory_update_interval_turns: 4
-rag_scope:
-  - memory
-  - lore
-  - characters
 ---
 ```
 
@@ -119,8 +115,6 @@ rag_scope:
 | `image_mode` | `inline`（本文中に表示）のみ対応 |
 | `missing_image_behavior` | 画像が存在しない場合の挙動。`fallback_normal`（normal.pngで代替）または `skip` |
 | `memory_update_interval_turns` | 長期記憶を更新するターン間隔 |
-| `rag_scope` | RAG 検索対象のカテゴリ。`memory` / `lore` / `characters` を列挙 |
-| `character_rag` | キャラクター検索方式。未指定は完全一致。`{match: fuzzy}` で部分一致を許可 |
 
 ### startings/
 
@@ -130,188 +124,10 @@ rag_scope:
 フロントマターで `type: starting` と `id` を指定してください。  
 本文は通常のシナリオテキストと同じ書式が使えます。
 
-### gm/
+### gm/ / characters/ / lore/
 
-GMへの役割・方針プロンプトを置くディレクトリです。ファイル名は自由です。  
-`narration_policy.md`（文体）、`state_update_policy.md`（State更新方針）、`image_policy.md`（画像方針）などを分けて管理するのが一般的です。
-
-### characters/
-
-`characters/{character_id}.md` にキャラクター設定を置きます。
-
-```yaml
----
-type: character
-id: aria_claudewell
-name: アリア・フォン・クロードウェル
-scenario: my_scenario
-aliases:
-  - アリア
-  - Aria
-role: 王国騎士
-tags:
-  - knight
-  - companion
-keywords:
-  - アリア
-  - 王国騎士
-rag: true
-priority: 90
-image_character_id: aria_claudewell
----
-```
-
-| フィールド | 説明 |
-|------|------|
-| `type` | `character` 固定 |
-| `id` | キャラクターID。ファイル名と一致させる |
-| `name` | 表示名 |
-| `aliases` | 別名・表記揺れ。RAG の名前マッチに使用 |
-| `keywords` | 完全一致検索用の明示キーワード。`aliases` に含まれない呼称はここに追記 |
-| `role` | 物語上の役割 |
-| `tags` | 検索・RAG 用タグ |
-| `rag` | `false` にすると RAG 対象から除外 |
-| `priority` | 検索優先度（数値が大きいほど優先） |
-| `image_character_id` | 画像パスで使用するID。省略時は `id` と同じ |
-
-キャラクター検索はデフォルトで **完全一致**（`id` / `name` / `aliases` / `keywords` への一致）で動作します。  
-広範な部分一致が必要な場合は `scenario.md` に `character_rag: {match: fuzzy}` を追加してください。
-
-### lore/
-
-`lore/{lore_id}.md` に世界設定・ロアを置きます。
-
-```yaml
----
-type: lore
-id: old_library
-name: 旧図書館
-scenario: my_scenario
-tags:
-  - location
-keywords:
-  - 旧図書館
-  - 禁書庫
-keywords_enabled: true
-chunk_enabled: true
-rag: true
-priority: 70
----
-```
-
-| フィールド | 説明 |
-|------|------|
-| `type` | `lore` 固定 |
-| `id` | Lore ID。ファイル名と一致させる |
-| `name` | 表示名 |
-| `tags` | 検索・RAG 用タグ |
-| `keywords` | キーワードトリガー用の完全一致キーワード |
-| `keywords_enabled` | `true` にするとキーワードトリガー専用になり、通常の RAG 検索対象から除外される |
-| `chunk_enabled` | `true`（デフォルト）で `keywords_enabled: true` 時にセクション単位で投入。`false` でファイル全文を投入 |
-| `rag` | `false` にすると通常 RAG 対象から除外（キーワードトリガーは止まらない。完全に止めるには `keywords_enabled: false`） |
-| `priority` | 検索優先度（数値が大きいほど優先） |
-
-#### keywords_enabled の使い分け
-
-| 設定 | 動作 |
-|------|------|
-| 未設定 / `keywords_enabled: false` | 通常の RAG 検索対象。`keywords` があっても両方のルートで投入される |
-| `keywords_enabled: true` | キーワードが一致したときのみ投入。組織・設定系 Lore の意図しない投入を防ぎたい場合に有効 |
-
-`keywords_enabled: true` のファイルは `keywords` が空だとどのクエリにもヒットしません。  
-空文字列のキーワードは無効です。1文字キーワードは誤爆が多いため警告対象です。
-
----
-
-## `<locus-rag>` タグ
-
-Lore や Memory の Markdown ファイル内に `<locus-rag>` タグを記述すると、**ファイル内の特定の範囲だけ**をRAG検索の単位として切り出せます。  
-ファイル全体を投入せず、クエリに関係する箇所だけをプロンプトに載せたい場合に使います。
-
-```markdown
----
-type: lore
-id: summoning_logic
-name: 召喚ロジック
-keywords:
-  - 召喚
-keywords_enabled: true
-chunk_enabled: true
----
-
-# 召喚ロジック概要
-
-召喚システムの全体方針。
-
-<locus-rag id="roster-constraint" title="召喚制約" keywords="召喚制約, サーヴァント一覧" priority="25">
-召喚できるのは登録済みの30体のみ。未登録の英霊は召喚不可。
-</locus-rag>
-
-<locus-rag id="summon-random" title="ランダム召喚" keywords="ランダム召喚, おまかせ">
-ランダム召喚では登録済みの英霊からランダムに一体を選出する。
-</locus-rag>
-```
-
-### locus-rag の属性
-
-| 属性 | 説明 |
-|------|------|
-| `id` | チャンクの識別子。ファイル内で一意にする |
-| `title` | チャンクのタイトル。RAG 結果のヘッダに使用 |
-| `tags` | チャンク単位の検索タグ（カンマ区切り） |
-| `keywords` | チャンク単位のキーワード。ファイルレベルでキーワードがマッチしても、このキーワードが一致しないチャンクは投入されない |
-| `priority` | チャンク単位の優先度（数値）。値が大きいほど優先的にプロンプトへ投入される |
-
-### `<locus-rag>` と見出し分割の違い
-
-| 方法 | 説明 |
-|------|------|
-| `<locus-rag>` タグ | 任意の範囲を明示的に区切る。キーワードや優先度をチャンク単位で設定できる |
-| Markdown 見出し（`##` 等） | 見出し単位で自動分割。`chunk_enabled: true` 時に有効 |
-
-`<locus-rag>` タグがある場合はタグ範囲が優先されます。  
-タグのない部分は見出し分割、またはファイル全体として扱われます。
-
----
-
-## Memory
-
-`memory/` はアプリケーションが自動生成・更新します。手動で編集して内容を調整することもできます。
-
-```yaml
----
-type: memory
-memory_kind: session_summary
-scenario: my_scenario
-session_id: session_001
-characters:
-  - user
-  - aria_claudewell
-locations:
-  - old_library
-topics:
-  - hidden_key
-importance: 72
-created: "2026-05-25"
-rag: true
----
-
-ユーザーは旧図書館でアリアに古い鍵を見せた。アリアは鍵に強い反応を示した。
-```
-
-| フィールド | 説明 |
-|------|------|
-| `type` | `memory` 固定 |
-| `memory_kind` | `session_summary` / `fact` / `unresolved_thread` など |
-| `characters` | 関連キャラクターのID一覧 |
-| `locations` | 関連場所 |
-| `topics` | 関連トピック |
-| `importance` | 重要度スコア（数値）。`priority` に準ずる形でスコアに反映 |
-| `created` | 作成日（ISO 形式: `2026-05-25`）。**直近の memory ほど優先的に投入される。** |
-| `rag` | `false` にすると RAG 対象から除外 |
-
-`created` フィールドを記入すると、新しい記憶ほどプロンプトに載りやすくなります。  
-自動生成された memory には作成日が自動付与されます。
+GMへのプロンプトとして読み込まれます。ファイル名は自由です。  
+RAGの対象になるため、関連性の高い内容を個別ファイルに分けておくと精度が上がります。
 
 ---
 
@@ -356,8 +172,6 @@ assets/images/{character_id}/
   combat.png        戦闘立ち絵
   ...
 ```
-
-対応フォーマット: `.png` / `.jpg` / `.jpeg` / `.webp` / `.gif`
 
 ### characters.json
 
