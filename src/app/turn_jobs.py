@@ -7,9 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from app.ids import is_locus_id
+from app.postprocess_jobs import start_postprocess_job
 from app.state_session import read_session_metadata
 from app.turn_payloads import turn_result_payload
-from app.turn_loop import ChatCompletionClient, TurnResult, run_gm_turn
+from app.turn_loop import ChatCompletionClient, finalize_gm_turn_fast, prepare_gm_turn, run_gm_turn
 from app.vault import Vault, VaultError
 
 
@@ -66,6 +67,7 @@ def start_turn_job(
     user_message: str,
     model_client: ChatCompletionClient,
     state_model_client: ChatCompletionClient | None,
+    defer_postprocess: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(user_message, str) or not user_message.strip():
         raise TurnJobError("user_message must be a non-empty string")
@@ -83,6 +85,7 @@ def start_turn_job(
         "turn": turn,
         "status": "queued",
         "user_message": user_message,
+        "defer_postprocess": defer_postprocess,
         "created_at": now,
         "updated_at": now,
         "completed_at": None,
@@ -101,6 +104,7 @@ def start_turn_job(
             "user_message": user_message,
             "model_client": model_client,
             "state_model_client": state_model_client,
+            "defer_postprocess": defer_postprocess,
         },
         daemon=True,
     )
@@ -139,17 +143,28 @@ def _run_turn_job(
     user_message: str,
     model_client: ChatCompletionClient,
     state_model_client: ChatCompletionClient | None,
+    defer_postprocess: bool,
 ) -> None:
     _update_turn_job(vault, scenario_id, session_id, turn_id, {"status": "running", "started_at": _now_iso()})
     try:
-        result = run_gm_turn(
-            vault,
-            scenario_id=scenario_id,
-            session_id=session_id,
-            user_message=user_message,
-            model_client=model_client,
-            state_model_client=state_model_client,
-        )
+        if defer_postprocess:
+            result = _run_deferred_turn_job(
+                vault,
+                scenario_id=scenario_id,
+                session_id=session_id,
+                user_message=user_message,
+                model_client=model_client,
+                state_model_client=state_model_client,
+            )
+        else:
+            result = turn_result_payload(run_gm_turn(
+                vault,
+                scenario_id=scenario_id,
+                session_id=session_id,
+                user_message=user_message,
+                model_client=model_client,
+                state_model_client=state_model_client,
+            ))
         _update_turn_job(
             vault,
             scenario_id,
@@ -158,7 +173,7 @@ def _run_turn_job(
             {
                 "status": "completed",
                 "completed_at": _now_iso(),
-                "result": turn_result_payload(result),
+                "result": result,
                 "error": None,
             },
         )
@@ -174,6 +189,49 @@ def _run_turn_job(
                 "error": {"type": type(exc).__name__, "message": str(exc)},
             },
         )
+
+
+def _run_deferred_turn_job(
+    vault: Vault,
+    *,
+    scenario_id: str,
+    session_id: str,
+    user_message: str,
+    model_client: ChatCompletionClient,
+    state_model_client: ChatCompletionClient | None,
+) -> dict[str, Any]:
+    prepared = prepare_gm_turn(
+        vault,
+        scenario_id=scenario_id,
+        session_id=session_id,
+        user_message=user_message,
+    )
+    completion = model_client.create_chat_completion(prepared.profile, prepared.messages)
+    result = finalize_gm_turn_fast(
+        vault,
+        scenario_id=scenario_id,
+        session_id=session_id,
+        user_message=user_message,
+        assistant_content=completion.content,
+        prepared=prepared,
+    )
+    postprocess_job = start_postprocess_job(
+        vault,
+        scenario_id=scenario_id,
+        session_id=session_id,
+        user_message=user_message,
+        assistant_content=completion.content,
+        prepared=prepared,
+        state_model_client=state_model_client,
+    )
+    return {
+        "turn": turn_result_payload(result),
+        "postprocess_job": {
+            "job_id": postprocess_job.get("job_id"),
+            "status": postprocess_job.get("status"),
+            "turn": postprocess_job.get("turn"),
+        },
+    }
 
 
 def _update_turn_job(

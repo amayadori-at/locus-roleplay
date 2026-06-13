@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import Any
 
 from app.ids import is_locus_id
-from app.rag_documents import RagDocument, RagDocumentError, document_title, document_type, list_rag_documents
+from app.rag_chunks import chunk_rag_document
+from app.rag_documents import RagDocumentError, document_title, document_type, list_rag_documents
+from app.rag_types import RagDocument, normalize_chunk_id, normalize_heading_path
 from app.vault import Vault, VaultError, VaultFileError
 
 
@@ -15,7 +17,7 @@ class RagIndexError(VaultError):
     pass
 
 
-RAG_INDEX_VERSION = 2
+RAG_INDEX_VERSION = 4
 
 
 def rebuild_rag_index(vault: Vault, scenario_id: str) -> dict[str, Any]:
@@ -42,17 +44,17 @@ def update_rag_index(vault: Vault, scenario_id: str) -> dict[str, Any]:
     skipped_paths: list[str] = []
 
     for candidate in candidates:
-        previous_item = previous_by_path.get(candidate.source_path)
-        if previous_item and _index_item_matches_stat(previous_item, candidate.stat):
-            indexed_documents.append(previous_item)
+        previous_items = previous_by_path.get(candidate.source_path, [])
+        if previous_items and all(_index_item_matches_stat(item, candidate.stat) for item in previous_items):
+            indexed_documents.extend(previous_items)
             reused_count += 1
             continue
         indexed = _index_candidate(vault, scenario_id, candidate)
-        if indexed is None:
+        if not indexed:
             skipped_count += 1
             skipped_paths.append(candidate.source_path)
             continue
-        indexed_documents.append(indexed)
+        indexed_documents.extend(indexed)
         indexed_count += 1
         changed_paths.append(candidate.source_path)
 
@@ -100,20 +102,20 @@ def rag_index_rebuild_needed(vault: Vault, scenario_id: str, index: dict[str, An
     indexed = index.get("documents")
     if not isinstance(indexed, list):
         return True
-    indexed_by_path = {item.get("source_path"): item for item in indexed if isinstance(item, dict)}
+    indexed_by_path = _documents_by_source_path(indexed)
     current_candidates = _candidate_markdown_paths(vault, scenario_id)
     if set(indexed_by_path) - {candidate.source_path for candidate in current_candidates}:
         return True
     for candidate in current_candidates:
-        indexed_document = indexed_by_path.get(candidate.source_path)
-        if not isinstance(indexed_document, dict):
-            document = _load_candidate_document(vault, scenario_id, candidate)
-            if document is None:
+        indexed_documents = indexed_by_path.get(candidate.source_path)
+        if not indexed_documents:
+            documents = _load_candidate_document(vault, scenario_id, candidate)
+            if not documents:
                 continue
             return True
-        if not _index_item_matches_stat(indexed_document, candidate.stat):
-            document = _load_candidate_document(vault, scenario_id, candidate)
-            if document is None:
+        if not all(_index_item_matches_stat(item, candidate.stat) for item in indexed_documents):
+            documents = _load_candidate_document(vault, scenario_id, candidate)
+            if not documents:
                 return True
             return True
     return False
@@ -176,19 +178,23 @@ def _candidate_markdown_paths(vault: Vault, scenario_id: str) -> list[_Candidate
     return candidates
 
 
-def _previous_documents_by_path(index: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+def _previous_documents_by_path(index: dict[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
     if not isinstance(index, dict) or index.get("version") != RAG_INDEX_VERSION:
         return {}
     documents = index.get("documents")
     if not isinstance(documents, list):
         return {}
-    result: dict[str, dict[str, Any]] = {}
+    return _documents_by_source_path(documents)
+
+
+def _documents_by_source_path(documents: list[Any]) -> dict[str, list[dict[str, Any]]]:
+    result: dict[str, list[dict[str, Any]]] = {}
     for item in documents:
         if not isinstance(item, dict):
             continue
         source_path = item.get("source_path")
         if isinstance(source_path, str):
-            result[source_path] = item
+            result.setdefault(source_path, []).append(item)
     return result
 
 
@@ -196,7 +202,7 @@ def _index_item_matches_stat(item: dict[str, Any], stat: Any) -> bool:
     return item.get("size") == stat.st_size and item.get("mtime_ns") == stat.st_mtime_ns
 
 
-def _load_candidate_document(vault: Vault, scenario_id: str, candidate: _Candidate) -> RagDocument | None:
+def _load_candidate_document(vault: Vault, scenario_id: str, candidate: _Candidate) -> list[RagDocument]:
     relative = f"rp/scenarios/{scenario_id}/{candidate.source_path}"
     try:
         document = vault.load_markdown(relative)
@@ -204,21 +210,22 @@ def _load_candidate_document(vault: Vault, scenario_id: str, candidate: _Candida
         raise RagIndexError(f"RAG markdown is unreadable: {candidate.source_path}") from exc
     metadata = dict(document.frontmatter)
     if metadata.get("rag") is False:
-        return None
-    return RagDocument(
+        return []
+    if metadata.get("keywords_enabled") is True:
+        return []  # handled exclusively by keyword trigger pipeline
+    return chunk_rag_document(
         source_path=candidate.source_path,
-        type=document_type(candidate.folder, metadata),
+        doc_type=document_type(candidate.folder, metadata),
         title=document_title(candidate.path, metadata),
-        body=document.body.strip(),
+        body=document.body,
         metadata=metadata,
+        chunkable=candidate.folder in {"memory", "lore"},
     )
 
 
-def _index_candidate(vault: Vault, scenario_id: str, candidate: _Candidate) -> dict[str, Any] | None:
-    document = _load_candidate_document(vault, scenario_id, candidate)
-    if document is None:
-        return None
-    return _index_document(vault, scenario_id, document, path=candidate.path, stat=candidate.stat)
+def _index_candidate(vault: Vault, scenario_id: str, candidate: _Candidate) -> list[dict[str, Any]]:
+    documents = _load_candidate_document(vault, scenario_id, candidate)
+    return [_index_document(vault, scenario_id, document, path=candidate.path, stat=candidate.stat) for document in documents]
 
 
 def _index_document(vault: Vault, scenario_id: str, document: RagDocument, *, path: Path | None = None, stat: Any | None = None) -> dict[str, Any]:
@@ -227,6 +234,8 @@ def _index_document(vault: Vault, scenario_id: str, document: RagDocument, *, pa
     stat = stat or path.stat()
     return {
         "source_path": document.source_path,
+        "chunk_id": document.chunk_id,
+        "heading_path": document.heading_path or [],
         "type": document.type,
         "title": document.title,
         "metadata": document.metadata,
@@ -235,6 +244,25 @@ def _index_document(vault: Vault, scenario_id: str, document: RagDocument, *, pa
         "mtime_ns": stat.st_mtime_ns,
         "content_hash": hashlib.sha256(raw).hexdigest(),
     }
+
+
+def index_item_to_document(item: dict[str, Any], *, source_folder: str) -> RagDocument | None:
+    source_path = item.get("source_path")
+    body = item.get("body")
+    if not isinstance(source_path, str) or not isinstance(body, str):
+        return None
+    document_type_value = item.get("type")
+    title = item.get("title")
+    metadata = item.get("metadata")
+    return RagDocument(
+        source_path=source_path,
+        type=document_type_value if isinstance(document_type_value, str) and document_type_value else source_folder,
+        title=title if isinstance(title, str) and title else source_path,
+        body=body.strip(),
+        metadata=metadata if isinstance(metadata, dict) else {},
+        chunk_id=normalize_chunk_id(item.get("chunk_id")),
+        heading_path=normalize_heading_path(item.get("heading_path")),
+    )
 
 
 def _write_index_payload(vault: Vault, scenario_id: str, payload: dict[str, Any]) -> None:

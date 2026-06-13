@@ -297,6 +297,7 @@ export function updateScenarioPromptGraph(scenarioId, graph) {
  * @param {string} scenarioId
  * @param {{
  *   session_id?: string,
+ *   starting_id?: string,
  *   persona_id?: string,
  *   profile_id?: string,
  *   user_message: string,
@@ -344,9 +345,62 @@ export function getScenarioRagStatus(scenarioId) {
 
 /**
  * @param {string} scenarioId
+ * @param {string} [sessionId]
  */
-export function listScenarioMemory(scenarioId) {
-  return apiJson(`/api/scenarios/${encodeURIComponent(scenarioId)}/memory`);
+export function listScenarioMemory(scenarioId, sessionId) {
+  const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+  return apiJson(`/api/scenarios/${encodeURIComponent(scenarioId)}/memory${query}`);
+}
+
+/**
+ * @param {string} scenarioId
+ * @param {string} kind
+ * @param {string} memoryId
+ * @param {{ rag_enabled?: boolean, status?: string }} patch
+ */
+export function updateMemoryMetadata(scenarioId, kind, memoryId, patch) {
+  return apiPut(
+    `/api/scenarios/${encodeURIComponent(scenarioId)}/memory/${encodeURIComponent(kind)}/${encodeURIComponent(memoryId)}`,
+    patch
+  );
+}
+
+/**
+ * @param {string} scenarioId
+ */
+export function listMemoryConsolidationSuggestions(scenarioId) {
+  return apiJson(`/api/scenarios/${encodeURIComponent(scenarioId)}/memory/consolidation-suggestions`);
+}
+
+/**
+ * @param {string} scenarioId
+ * @param {{ session_id: string, profile_id: string }} payload
+ */
+export function createMemoryConsolidationSuggestions(scenarioId, payload) {
+  return apiPost(`/api/scenarios/${encodeURIComponent(scenarioId)}/memory/consolidation-suggestions`, payload);
+}
+
+/**
+ * @param {string} scenarioId
+ * @param {string} suggestionId
+ * @param {string} status
+ */
+export function updateMemoryConsolidationSuggestionStatus(scenarioId, suggestionId, status) {
+  return apiPut(
+    `/api/scenarios/${encodeURIComponent(scenarioId)}/memory/consolidation-suggestions/${encodeURIComponent(suggestionId)}`,
+    { status }
+  );
+}
+
+/**
+ * @param {string} scenarioId
+ * @param {string} suggestionId
+ */
+export function applyMemoryConsolidationSuggestion(scenarioId, suggestionId) {
+  return apiPut(
+    `/api/scenarios/${encodeURIComponent(scenarioId)}/memory/consolidation-suggestions/${encodeURIComponent(suggestionId)}`,
+    { apply: true }
+  );
 }
 
 /**
@@ -428,6 +482,14 @@ export function deleteSession(scenarioId, sessionId) {
 }
 
 /**
+ * @param {string} scenarioId
+ * @param {string} sessionId
+ */
+export function getSessionDetail(scenarioId, sessionId) {
+  return apiJson(`/api/scenarios/${encodeURIComponent(scenarioId)}/sessions/${encodeURIComponent(sessionId)}`);
+}
+
+/**
  * @param {{
  *   scenario_id: string,
  *   persona_id: string,
@@ -435,8 +497,7 @@ export function deleteSession(scenarioId, sessionId) {
  *   summary_profile_id?: string | null,
  *   session_id?: string,
  *   display_name?: string,
- *   starting_id?: string | null,
- *   start_id?: string | null
+ *   starting_id?: string | null
  * }} payload
  */
 export function createSession(payload) {
@@ -517,7 +578,18 @@ export function getPostprocessJob(scenarioId, sessionId, jobId) {
 /**
  * @param {string} scenarioId
  * @param {string} sessionId
- * @param {{ user_note?: string, session_note?: string, scene_note?: string, display_name?: string, bookmarked_turns?: number[] }} payload
+ * @param {string} turnId
+ */
+export function getTurnJob(scenarioId, sessionId, turnId) {
+  return apiJson(
+    `/api/scenarios/${encodeURIComponent(scenarioId)}/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}`
+  );
+}
+
+/**
+ * @param {string} scenarioId
+ * @param {string} sessionId
+ * @param {{ user_note?: string, session_note?: string, scene_note?: string, display_name?: string, bookmarked_turns?: number[], rp_profile_id?: string, summary_profile_id?: string }} payload
  */
 export function updateSessionSettings(scenarioId, sessionId, payload) {
   return apiJson(
@@ -533,7 +605,7 @@ export function updateSessionSettings(scenarioId, sessionId, payload) {
  * @param {string} scenarioId
  * @param {string} sessionId
  * @param {string} userMessage
- * @param {{ signal?: AbortSignal, stream?: boolean }} [options]
+ * @param {{ signal?: AbortSignal, stream?: boolean, async?: boolean, deferPostprocess?: boolean }} [options]
  */
 export function sendTurn(scenarioId, sessionId, userMessage, options = {}) {
   return apiJson(
@@ -541,7 +613,12 @@ export function sendTurn(scenarioId, sessionId, userMessage, options = {}) {
     {
       method: "POST",
       signal: options.signal,
-      body: JSON.stringify({ user_message: userMessage, stream: Boolean(options.stream) })
+      body: JSON.stringify({
+        user_message: userMessage,
+        stream: Boolean(options.stream),
+        async: Boolean(options.async),
+        defer_postprocess: Boolean(options.deferPostprocess)
+      })
     }
   );
 }
@@ -554,7 +631,7 @@ export function sendTurn(scenarioId, sessionId, userMessage, options = {}) {
  *   signal?: AbortSignal,
  *   onDelta?: (delta: string) => void,
  *   onFinal?: (data: any) => void,
- *   onPostTurn?: (data: any) => void
+ *   onPostTurn?: (data: any) => void | Promise<void>
  * }} [options]
  */
 export async function sendTurnStream(scenarioId, sessionId, userMessage, options = {}) {
@@ -587,14 +664,14 @@ export async function sendTurnStream(scenarioId, sessionId, userMessage, options
   let finalData = null;
   await consumeSseStream(response, {
     createError: (data) => new ApiError(String(data.message || data.error || "Stream failed"), 200, data),
-    onEvent(event) {
+    async onEvent(event) {
       if (event.event === "delta" && typeof event.data.delta === "string") {
         options.onDelta?.(event.data.delta);
       } else if (event.event === "final") {
         finalData = event.data;
         options.onFinal?.(event.data);
       } else if (event.event === "post_turn") {
-        options.onPostTurn?.(event.data);
+        await options.onPostTurn?.(event.data);
         return "stop";
       }
     }
@@ -783,4 +860,64 @@ export async function continueTurnStream(scenarioId, sessionId, turn, options = 
   });
   if (finalData) return finalData;
   throw new ApiError("Streaming response did not include final turn payload", response.status, {});
+}
+
+// ---------------------------------------------------------------------------
+// ZIP export / import
+// ---------------------------------------------------------------------------
+
+/**
+ * @param {string} scenarioId
+ * @returns {Promise<Blob>}
+ */
+export async function exportScenario(scenarioId) {
+  const resp = await fetch(`/api/scenarios/${encodeURIComponent(scenarioId)}/export`);
+  if (!resp.ok) {
+    let message = `Export failed: ${resp.status}`;
+    try {
+      const data = await resp.json();
+      if (data.message) message = data.message;
+    } catch (_) { /* ignore */ }
+    throw new ApiError(message, resp.status, {});
+  }
+  return resp.blob();
+}
+
+/**
+ * @param {Blob} zipBlob
+ * @param {string} scenarioId
+ * @returns {Promise<any>}
+ */
+export async function importScenario(zipBlob, scenarioId) {
+  const resp = await fetch(
+    `/api/scenarios/import?scenario_id=${encodeURIComponent(scenarioId)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: zipBlob,
+    }
+  );
+  const data = await resp.json();
+  if (!resp.ok) throw new ApiError(data.message || data.error || `Import failed: ${resp.status}`, resp.status, data);
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// Memory management
+// ---------------------------------------------------------------------------
+
+/**
+ * @param {string} scenarioId
+ * @param {string} kind
+ * @param {string} memoryId
+ * @returns {Promise<any>}
+ */
+export async function deleteMemory(scenarioId, kind, memoryId) {
+  const resp = await fetch(
+    `/api/scenarios/${encodeURIComponent(scenarioId)}/memory/${encodeURIComponent(kind)}/${encodeURIComponent(memoryId)}`,
+    { method: "DELETE" }
+  );
+  const data = await resp.json();
+  if (!resp.ok) throw new ApiError(data.message || data.error || "Delete failed", resp.status, data);
+  return data;
 }

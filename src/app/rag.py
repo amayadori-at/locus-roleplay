@@ -17,6 +17,7 @@ from app.rag_documents import (
     list_keyword_lore_documents as _list_keyword_lore_documents,
     list_rag_documents as _list_rag_documents,
     load_scenario_file as _load_scenario_file,
+    session_memory_results as _session_memory_results,
 )
 from app.rag_format import (
     DEFAULT_RAG_TOKEN_BUDGET,
@@ -34,7 +35,6 @@ from app.rag_index import (
 import app.rag_retrieve as _rag_retrieve
 from app.rag_retrieve import (
     VECTOR_MATCH_THRESHOLD,
-    VECTOR_ONLY_MAX_SCORE,
     RagRetrieveError,
     embedding_text_for_document as _retrieve_embedding_text,
     query_terms as _retrieve_query_terms,
@@ -51,6 +51,17 @@ from app.rag_vectors import (
 import app.rag_vectors as _rag_vectors
 from app.vault import Vault, VaultError
 
+# Facade re-exports: these names are imported from app.rag by prompt_preview,
+# the api package and tests, but are not referenced inside this module.
+__all__ = [
+    "DEFAULT_KEYWORD_TRIGGER_TOKEN_BUDGET",
+    "DEFAULT_RAG_TOKEN_BUDGET",
+    "DEFAULT_RAG_TYPE_TOKEN_BUDGETS",
+    "VECTOR_MATCH_THRESHOLD",
+    "budget_rag_results",
+    "format_rag_results",
+]
+
 
 class RagError(VaultError):
     """Raised when deterministic RAG retrieval fails."""
@@ -65,6 +76,10 @@ def retrieve_context(
     sources: list[str] | tuple[str, ...] | None = None,
     embedding_config: EmbeddingConfig | None = None,
     exclude_paths: set[str] | None = None,
+    character_match_mode: str = "exact",
+    limits: dict[str, int] | None = None,
+    allowed_session_ids: set[str] | None = None,
+    current_turn: int | None = None,
 ) -> list[dict[str, Any]]:
     try:
         _rag_retrieve.embed_texts = embed_texts
@@ -76,6 +91,10 @@ def retrieve_context(
             sources=sources,
             embedding_config=embedding_config,
             exclude_paths=exclude_paths,
+            character_match_mode=character_match_mode,
+            limits=limits,
+            allowed_session_ids=allowed_session_ids,
+            current_turn=current_turn,
         )
     except RagRetrieveError as exc:
         raise RagError(str(exc)) from exc
@@ -161,6 +180,24 @@ def build_rag_query(
     return _build_rag_query(user_message=user_message, recent_log=recent_log, state=state)
 
 
+def session_memory_results(
+    vault: Vault,
+    scenario_id: str,
+    *,
+    allowed_session_ids: set[str],
+    exclude_paths: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    try:
+        return _session_memory_results(
+            vault,
+            scenario_id,
+            allowed_session_ids=allowed_session_ids,
+            exclude_paths=exclude_paths,
+        )
+    except RagDocumentError as exc:
+        raise RagError(str(exc)) from exc
+
+
 def build_vector_index(
     vault: Vault,
     scenario_id: str,
@@ -243,5 +280,7 @@ def _score_documents_hybrid(
     documents: list[RagDocument],
     terms: list[str],
     vector_sims: dict[str, float],
+    *,
+    character_match_mode: str = "exact",
 ) -> list[dict[str, Any]]:
-    return _retrieve_score_documents_hybrid(documents, terms, vector_sims)
+    return _retrieve_score_documents_hybrid(documents, terms, vector_sims, character_match_mode=character_match_mode)

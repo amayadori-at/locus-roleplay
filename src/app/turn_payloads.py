@@ -18,6 +18,7 @@ def turn_result_payload(result: TurnResult) -> dict[str, Any]:
         "memory_updated": result.memory_updated,
         "memory_update_error": result.memory_update_error,
         "memory_files": result.memory_files,
+        "response_duration_ms": result.response_duration_ms,
     }
 
 

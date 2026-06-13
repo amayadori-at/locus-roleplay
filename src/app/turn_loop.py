@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import json
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Protocol
 
-from app.loaders import ModelProfile, Persona, Scenario, load_profile, load_scenario
+from app.loaders import ModelProfile, Scenario, load_profile, load_scenario
 from app.images import Segment, parse_image_markers
-from app.messages import is_conversation_role
 from app.model_client import ChatCompletionResult
 from app.prompt_preview import compose_prompt_graph
+from app.reasoning import sanitize_log_entries, strip_reasoning_blocks as _strip_reasoning_blocks
 from app.state_session import (
     append_session_log,
     read_session_log,
@@ -19,6 +19,7 @@ from app.state_session import (
 )
 from app.turn_postprocess import run_turn_postprocess
 from app.turn_prompt_payload import latest_prompt_payload
+from app.rag_types import document_key_from_parts
 from app.vault import Vault, VaultError
 
 
@@ -41,16 +42,6 @@ class StreamingChatCompletionClient(ChatCompletionClient, Protocol):
 
 
 @dataclass(frozen=True)
-class PromptContext:
-    scenario: Scenario
-    persona: Persona
-    profile: ModelProfile
-    state: dict[str, Any]
-    recent_log: list[dict[str, Any]]
-    user_note: str = ""
-
-
-@dataclass(frozen=True)
 class TurnResult:
     session_id: str
     scenario_id: str
@@ -63,6 +54,7 @@ class TurnResult:
     memory_updated: bool = False
     memory_update_error: str | None = None
     memory_files: list[str] | None = None
+    response_duration_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -76,38 +68,6 @@ class TurnPreparation:
     turn: int
 
 
-def compose_gm_messages(context: PromptContext, user_message: str) -> list[dict[str, str]]:
-    if not isinstance(user_message, str) or not user_message.strip():
-        raise TurnLoopError("user_message must be a non-empty string")
-
-    system_content = "\n\n".join(
-        section
-        for section in (
-            _section("System Prompt", context.scenario.system_prompt),
-            _section("GM Policy", context.scenario.gm_system),
-            _section("Narration Policy", context.scenario.narration_policy),
-            _section("Scenario", _scenario_text(context.scenario)),
-            _section("User Persona", _persona_text(context.persona)),
-            _section("Session User Note", context.user_note),
-            _section("Current State", _state_text(context.state)),
-            _section("Relevant Characters", ""),
-            _section("Relevant Lore", ""),
-            _section("Relevant Memory", ""),
-            _section("Image Policy", _image_policy_text(context.scenario)),
-        )
-        if section
-    )
-
-    messages = [{"role": "system", "content": system_content}]
-    for entry in context.recent_log:
-        role = entry.get("role")
-        content = entry.get("content")
-        if is_conversation_role(role) and isinstance(content, str) and content:
-            messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": user_message})
-    return messages
-
-
 def run_gm_turn(
     vault: Vault,
     *,
@@ -119,7 +79,9 @@ def run_gm_turn(
     recent_limit: int = 12,
 ) -> TurnResult:
     prepared = prepare_gm_turn(vault, scenario_id=scenario_id, session_id=session_id, user_message=user_message, recent_limit=recent_limit)
+    started = time.perf_counter()
     result = model_client.create_chat_completion(prepared.profile, prepared.messages)
+    response_duration_ms = _duration_ms(started)
     return finalize_gm_turn(
         vault,
         scenario_id=scenario_id,
@@ -128,6 +90,7 @@ def run_gm_turn(
         assistant_content=result.content,
         prepared=prepared,
         state_model_client=state_model_client,
+        response_duration_ms=response_duration_ms,
     )
 
 
@@ -144,11 +107,13 @@ def run_gm_turn_stream(
 ) -> TurnResult:
     prepared = prepare_gm_turn(vault, scenario_id=scenario_id, session_id=session_id, user_message=user_message, recent_limit=recent_limit)
     chunks: list[str] = []
+    started = time.perf_counter()
     for chunk in model_client.create_chat_completion_stream(prepared.profile, prepared.messages):
         if not chunk:
             continue
         chunks.append(chunk)
         on_delta(chunk)
+    response_duration_ms = _duration_ms(started)
     return finalize_gm_turn(
         vault,
         scenario_id=scenario_id,
@@ -157,6 +122,7 @@ def run_gm_turn_stream(
         assistant_content="".join(chunks),
         prepared=prepared,
         state_model_client=state_model_client,
+        response_duration_ms=response_duration_ms,
     )
 
 
@@ -168,6 +134,7 @@ def prepare_gm_turn(
     user_message: str,
     recent_limit: int = 12,
     recent_log_override: list[dict[str, Any]] | None = None,
+    state_override: dict[str, Any] | None = None,
 ) -> TurnPreparation:
     if not isinstance(user_message, str) or not user_message.strip():
         raise TurnLoopError("user_message must be a non-empty string")
@@ -181,9 +148,9 @@ def prepare_gm_turn(
     scenario = load_scenario(vault, scenario_id)
     profile = load_profile(vault, rp_profile_id)
     if recent_log_override is not None:
-        raw_recent_log = recent_log_override
+        raw_recent_log = sanitize_log_entries(recent_log_override)
     else:
-        raw_recent_log = read_session_log(vault, scenario_id, session_id)
+        raw_recent_log = sanitize_log_entries(read_session_log(vault, scenario_id, session_id))
     prompt = compose_prompt_graph(
         vault,
         scenario_id=scenario_id,
@@ -191,6 +158,7 @@ def prepare_gm_turn(
         user_message=user_message,
         recent_limit=recent_limit,
         recent_log_override=raw_recent_log,
+        state_override=state_override,
     )
     recent_log = prompt.get("selected_recent_log")
     if not isinstance(recent_log, list):
@@ -215,6 +183,7 @@ def finalize_gm_turn(
     assistant_content: str,
     prepared: TurnPreparation,
     state_model_client: ChatCompletionClient | None = None,
+    response_duration_ms: int | None = None,
 ) -> TurnResult:
     write_latest_session_prompt(
         vault,
@@ -232,9 +201,19 @@ def finalize_gm_turn(
         ),
     )
     segments = parse_image_markers(assistant_content, scenario=prepared.scenario, vault=vault)
+    postprocess_content = _strip_reasoning_blocks(assistant_content)
 
     append_session_log(vault, scenario_id, session_id, turn=prepared.turn, role="user", content=user_message)
-    append_session_log(vault, scenario_id, session_id, turn=prepared.turn, role="assistant", content=assistant_content)
+    assistant_extra = {"response_duration_ms": response_duration_ms} if response_duration_ms is not None else None
+    append_session_log(
+        vault,
+        scenario_id,
+        session_id,
+        turn=prepared.turn,
+        role="assistant",
+        content=postprocess_content,
+        extra=assistant_extra,
+    )
 
     postprocess = run_turn_postprocess(
         vault,
@@ -245,7 +224,7 @@ def finalize_gm_turn(
         scenario_metadata=prepared.scenario.metadata,
         recent_log=prepared.recent_log,
         user_message=user_message,
-        assistant_content=assistant_content,
+        assistant_content=postprocess_content,
         state_model_client=state_model_client,
     )
 
@@ -266,6 +245,7 @@ def finalize_gm_turn(
         memory_updated=postprocess["memory_updated"],
         memory_update_error=postprocess["memory_update_error"],
         memory_files=postprocess["memory_files"],
+        response_duration_ms=response_duration_ms,
     )
 
 
@@ -277,6 +257,7 @@ def finalize_gm_turn_fast(
     user_message: str,
     assistant_content: str,
     prepared: TurnPreparation,
+    response_duration_ms: int | None = None,
 ) -> TurnResult:
     """Fast IO-only finalization: log, segments, metadata. No LLM calls."""
     write_latest_session_prompt(
@@ -295,8 +276,18 @@ def finalize_gm_turn_fast(
         ),
     )
     segments = parse_image_markers(assistant_content, scenario=prepared.scenario, vault=vault)
+    log_content = _strip_reasoning_blocks(assistant_content)
     append_session_log(vault, scenario_id, session_id, turn=prepared.turn, role="user", content=user_message)
-    append_session_log(vault, scenario_id, session_id, turn=prepared.turn, role="assistant", content=assistant_content)
+    assistant_extra = {"response_duration_ms": response_duration_ms} if response_duration_ms is not None else None
+    append_session_log(
+        vault,
+        scenario_id,
+        session_id,
+        turn=prepared.turn,
+        role="assistant",
+        content=log_content,
+        extra=assistant_extra,
+    )
     updated_metadata = dict(prepared.metadata)
     updated_metadata["turn_count"] = prepared.turn
     updated_metadata["updated_at"] = _now_iso()
@@ -313,6 +304,7 @@ def finalize_gm_turn_fast(
         memory_updated=False,
         memory_update_error=None,
         memory_files=[],
+        response_duration_ms=response_duration_ms,
     )
 
 
@@ -327,6 +319,7 @@ def run_gm_post_turn(
     state_model_client: ChatCompletionClient | None,
 ) -> dict[str, Any]:
     """Slow post-processing: state update and memory summary (LLM calls)."""
+    postprocess_content = _strip_reasoning_blocks(assistant_content)
     return run_turn_postprocess(
         vault,
         scenario_id=scenario_id,
@@ -336,47 +329,8 @@ def run_gm_post_turn(
         scenario_metadata=prepared.scenario.metadata,
         recent_log=prepared.recent_log,
         user_message=user_message,
-        assistant_content=assistant_content,
+        assistant_content=postprocess_content,
         state_model_client=state_model_client,
-    )
-
-
-def _section(title: str, content: str) -> str:
-    stripped = content.strip()
-    if not stripped:
-        return ""
-    return f"## {title}\n{stripped}"
-
-
-def _scenario_text(scenario: Scenario) -> str:
-    parts = [f"ID: {scenario.id}", f"Name: {scenario.name}"]
-    if scenario.body.strip():
-        parts.append(scenario.body.strip())
-    return "\n".join(parts)
-
-
-def _persona_text(persona: Persona) -> str:
-    parts = [f"ID: {persona.id}", f"Name: {persona.name}"]
-    if persona.body.strip():
-        parts.append(persona.body.strip())
-    return "\n".join(parts)
-
-
-def _state_text(state: dict[str, Any]) -> str:
-    return json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True)
-
-
-def _image_policy_text(scenario: Scenario) -> str:
-    image_enabled = scenario.metadata.get("image_enabled")
-    image_mode = scenario.metadata.get("image_mode")
-    if image_enabled is not True:
-        return ""
-    if scenario.image_policy.strip():
-        return scenario.image_policy
-    return json.dumps(
-        {"image_enabled": image_enabled, "image_mode": image_mode},
-        ensure_ascii=False,
-        sort_keys=True,
     )
 
 
@@ -397,12 +351,18 @@ def _prompt_rag_results(prompt: dict[str, Any]) -> list[dict[str, Any]]:
             if not isinstance(result, dict):
                 continue
             source_path = result.get("source_path")
-            if not isinstance(source_path, str) or source_path in seen:
+            chunk_id = result.get("chunk_id")
+            if not isinstance(source_path, str):
                 continue
-            seen.add(source_path)
+            result_key = document_key_from_parts(source_path, chunk_id if isinstance(chunk_id, str) else None)
+            if result_key in seen:
+                continue
+            seen.add(result_key)
             results.append(
                 {
                     "source_path": source_path,
+                    "chunk_id": chunk_id if isinstance(chunk_id, str) and chunk_id else None,
+                    "heading_path": result.get("heading_path") if isinstance(result.get("heading_path"), list) else [],
                     "type": result.get("type"),
                     "title": result.get("title"),
                     "score": result.get("score"),
@@ -431,6 +391,8 @@ def _prompt_rag_debug(prompt: dict[str, Any]) -> list[dict[str, Any]]:
                 "retrieved_count": expansion.get("retrieved_count", 0),
                 "included_count": expansion.get("included_count", len(expansion.get("results", []))),
                 "token_budget": expansion.get("token_budget"),
+                "keyword_token_budget": expansion.get("keyword_token_budget"),
+                "token_budgets": expansion.get("token_budgets") if isinstance(expansion.get("token_budgets"), dict) else {},
             }
         )
     return debug
@@ -450,3 +412,7 @@ def _next_turn(metadata: dict[str, Any]) -> int:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def _duration_ms(started: float) -> int:
+    return max(0, round((time.perf_counter() - started) * 1000))

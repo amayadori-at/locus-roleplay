@@ -27,10 +27,9 @@
    * @typedef {{ backend: "ok" | "error", vault?: VaultStatus } | null} HealthStatus
    */
 
-  /** @type {HealthStatus} */
-  let health = null;
-  let healthLoading = true;
-  let mobileSidebarOpen = false;
+  let health = $state(/** @type {HealthStatus} */ (null));
+  let healthLoading = $state(true);
+  let mobileSidebarOpen = $state(false);
 
   const VAULT_DIR_LABELS = {
     "rp/scenarios": "scenarios",
@@ -122,7 +121,7 @@
       </div>
     </aside>
 
-    <section class="workspace" aria-labelledby="workspace-heading">
+    <section class="workspace" class:scenario-edit={$route.name === ROUTE_NAMES.scenario} aria-labelledby="workspace-heading">
       {#if $route.name === ROUTE_NAMES.front}
       <FrontPage onNavigate={navigation} />
       {:else if $route.name === ROUTE_NAMES.scenario}

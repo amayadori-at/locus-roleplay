@@ -11,44 +11,48 @@
   } from "./timelineRows.js";
   import { t } from "./i18n.js";
 
-  /** @type {Array<Record<string, any>>} */
-  export let items = [];
-  export let currentSessionId = "";
-  /** @type {Record<string, any>} */
-  export let metadata = {};
-  /** @type {(turn: number, role: string) => void} */
-  export let onJump = (turn, role) => {};
-  /** @type {(turn: number) => void} */
-  export let onBranch = (turn) => {};
-  /** @type {(sessionId: string) => void} */
-  export let onOpenSession = (sessionId) => {};
-  /** @type {(turn: number, bookmarked: boolean) => void} */
-  export let onToggleBookmark = (turn, bookmarked) => {};
-  /** @type {(sessionId: string) => void} */
-  export let onCopySessionId = (sessionId) => {};
-  /** @type {(branch: Record<string, any>) => void} */
-  export let onRenameBranch = (branch) => {};
+  /** @type {{
+   *   items?: Array<Record<string, any>>,
+   *   currentSessionId?: string,
+   *   metadata?: Record<string, any>,
+   *   onJump?: (turn: number, role: string) => void,
+   *   onBranch?: (turn: number) => void,
+   *   onOpenSession?: (sessionId: string) => void,
+   *   onToggleBookmark?: (turn: number, bookmarked: boolean) => void,
+   *   onCopySessionId?: (sessionId: string) => void,
+   *   onRenameBranch?: (branch: Record<string, any>) => void,
+   * }} */
+  let {
+    items = [],
+    currentSessionId = "",
+    metadata = {},
+    onJump = (turn, role) => {},
+    onBranch = (turn) => {},
+    onOpenSession = (sessionId) => {},
+    onToggleBookmark = (turn, bookmarked) => {},
+    onCopySessionId = (sessionId) => {},
+    onRenameBranch = (branch) => {}
+  } = $props();
 
-  let jumpTurn = "";
-  let searchText = "";
-  let bookmarkOnly = false;
-  let groupByTurns = true;
-  let groupSize = DEFAULT_GROUP_SIZE;
-  let toolsOpen = false;
+  let jumpTurn = $state("");
+  let searchText = $state("");
+  let bookmarkOnly = $state(false);
+  let groupByTurns = $state(true);
+  let groupSize = $state(DEFAULT_GROUP_SIZE);
+  let toolsOpen = $state(false);
   /** @type {Record<string, boolean>} */
-  let collapsedGroups = {};
-  /** @type {HTMLDivElement | null} */
-  let viewportElement = null;
-  let scrollTop = 0;
+  let collapsedGroups = $state({});
+  let viewportElement = $state(/** @type {HTMLDivElement | null} */ (null));
+  let scrollTop = $state(0);
 
-  $: filteredItems = filterTimelineItems(items, searchText, bookmarkOnly);
-  $: normalizedGroupSize = normalizeGroupSize(groupSize);
-  $: timelineRows = buildTimelineRows(filteredItems, groupByTurns ? normalizedGroupSize : 0, collapsedGroups);
-  $: useVirtualRows = timelineRows.length > VIRTUAL_THRESHOLD;
-  $: virtualWindow = getVirtualWindow(timelineRows.length, scrollTop, viewportElement?.clientHeight || 720, useVirtualRows);
-  $: visibleRows = timelineRows.slice(virtualWindow.start, virtualWindow.end);
-  $: topSpacerHeight = useVirtualRows ? virtualWindow.start * ESTIMATED_ROW_HEIGHT : 0;
-  $: bottomSpacerHeight = useVirtualRows ? Math.max(0, timelineRows.length - virtualWindow.end) * ESTIMATED_ROW_HEIGHT : 0;
+  const filteredItems = $derived(filterTimelineItems(items, searchText, bookmarkOnly));
+  const normalizedGroupSize = $derived(normalizeGroupSize(groupSize));
+  const timelineRows = $derived(buildTimelineRows(filteredItems, groupByTurns ? normalizedGroupSize : 0, collapsedGroups));
+  const useVirtualRows = $derived(timelineRows.length > VIRTUAL_THRESHOLD);
+  const virtualWindow = $derived(getVirtualWindow(timelineRows.length, scrollTop, viewportElement?.clientHeight || 720, useVirtualRows));
+  const visibleRows = $derived(timelineRows.slice(virtualWindow.start, virtualWindow.end));
+  const topSpacerHeight = $derived(useVirtualRows ? virtualWindow.start * ESTIMATED_ROW_HEIGHT : 0);
+  const bottomSpacerHeight = $derived(useVirtualRows ? Math.max(0, timelineRows.length - virtualWindow.end) * ESTIMATED_ROW_HEIGHT : 0);
 
   function parentSessionLabel() {
     return metadata.parent_session_id

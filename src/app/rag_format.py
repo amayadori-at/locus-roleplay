@@ -90,9 +90,32 @@ def result_budget_type(result: dict[str, Any]) -> str:
 
 def _format_result_block(result: dict[str, Any]) -> str:
     title = result["title"] or result["source_path"]
-    header = f"#### {title}\nsource: {result['source_path']}\ntype: {result['type']}\nscore: {result['score']}"
+    header_lines = [f"#### {title}", f"source: {result['source_path']}"]
+    chunk_id = result.get("chunk_id")
+    if isinstance(chunk_id, str) and chunk_id:
+        header_lines.append(f"chunk: {chunk_id}")
+    heading_path = result.get("heading_path")
+    if isinstance(heading_path, list) and all(isinstance(item, str) for item in heading_path) and heading_path:
+        header_lines.append(f"heading: {' > '.join(heading_path)}")
+    header_lines.extend([f"type: {result['type']}", f"score: {result['score']}"])
+    header_lines.extend(_memory_metadata_lines(result))
+    header = "\n".join(header_lines)
     content = str(result.get("content", "")).strip()
     return f"{header}\n{content}" if content else header
+
+
+def _memory_metadata_lines(result: dict[str, Any]) -> list[str]:
+    if result_budget_type(result) != "memory":
+        return []
+    metadata = result.get("metadata")
+    if not isinstance(metadata, dict):
+        return []
+    lines: list[str] = []
+    for key in ("memory_kind", "session_id", "turn_range", "importance"):
+        value = metadata.get(key)
+        if isinstance(value, (str, int, float)) and not isinstance(value, bool) and str(value).strip():
+            lines.append(f"{key}: {value}")
+    return lines
 
 
 def _fit_result_to_budget(result: dict[str, Any], available_tokens: int | None) -> tuple[dict[str, Any], int] | None:

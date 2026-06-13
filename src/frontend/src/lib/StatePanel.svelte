@@ -2,28 +2,30 @@
   import { getScenarioStateTemplate } from "./api.js";
   import { buildRenderedHtml } from "./stateTemplate.js";
 
-  /** @type {Record<string, any> | null} */
-  export let state = null;
-  /** @type {string} */
-  export let scenarioId = "";
-  /** @type {string} */
-  export let stateJsonStr = "";
+  /** The prop is still named `state` for callers; the local alias avoids
+   * clashing with the $state rune inside this component. */
+  /** @type {{ state?: Record<string, any> | null, scenarioId?: string, stateJsonStr?: string }} */
+  let { state: stateData = null, scenarioId = "", stateJsonStr = "" } = $props();
 
-  let hasTemplate = false;
-  let templateHtml = "";
-  let templateCss = "";
-  let errorFallback = false;
+  let hasTemplate = $state(false);
+  let templateHtml = $state("");
+  let templateCss = $state("");
+  let errorFallback = $state(false);
 
   /** @type {HTMLElement | undefined} */
-  let shadowContainer;
+  let shadowContainer = $state();
 
-  $: if (scenarioId) {
-    void loadTemplate(scenarioId);
-  }
+  $effect(() => {
+    if (scenarioId) {
+      void loadTemplate(scenarioId);
+    }
+  });
 
-  $: if (hasTemplate && !errorFallback && shadowContainer && state) {
-    updateShadowDOM();
-  }
+  $effect(() => {
+    if (hasTemplate && !errorFallback && shadowContainer && stateData) {
+      updateShadowDOM();
+    }
+  });
 
   /** @param {string} id */
   async function loadTemplate(id) {
@@ -50,7 +52,7 @@
       if (!shadowRoot) {
         shadowRoot = shadowContainer.attachShadow({ mode: "open" });
       }
-      const renderedHtml = buildRenderedHtml(templateHtml, state || {});
+      const renderedHtml = buildRenderedHtml(templateHtml, stateData || {});
       shadowRoot.innerHTML = `<style>${templateCss}</style>${renderedHtml}`;
     } catch (e) {
       console.error("Shadow DOM render error", e);

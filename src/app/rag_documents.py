@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import re
 from pathlib import Path
 from typing import Any
 
 from app.ids import is_locus_id
+from app.rag_chunks import chunk_rag_document
+from app.rag_types import RagDocument, document_key
 from app.vault import Vault, VaultFileError
 
 
@@ -16,15 +18,11 @@ class RagDocumentError(Exception):
 KEYWORD_TRIGGER_LIMIT = 4
 KEYWORD_TRIGGER_MESSAGE_LIMIT = 8
 DEFAULT_KEYWORD_TRIGGER_TOKEN_BUDGET = 1200
-
-
-@dataclass(frozen=True)
-class RagDocument:
-    source_path: str
-    type: str
-    title: str
-    body: str
-    metadata: dict[str, Any]
+DEFAULT_SESSION_MEMORY_RECENT_LIMIT = 4
+DEFAULT_SESSION_MEMORY_IMPORTANT_LIMIT = 6
+DEFAULT_SESSION_MEMORY_EARLIEST_LIMIT = 2
+DEFAULT_SESSION_MEMORY_LIMIT = 10
+MEMORY_INACTIVE_STATUSES = frozenset({"resolved", "superseded", "archived"})
 
 
 def list_available_mods(vault: Vault, scenario_id: str) -> list[dict[str, Any]]:
@@ -152,7 +150,8 @@ def keyword_triggered_lore_results(
     if not documents or not messages:
         return [], warnings
     excluded = exclude_paths or set()
-    results: list[dict[str, Any]] = []
+
+    matched_documents: list[tuple[RagDocument, list[str]]] = []
     for document in documents:
         if document.source_path in excluded:
             continue
@@ -160,23 +159,59 @@ def keyword_triggered_lore_results(
         matched = [keyword for keyword in keywords if any(keyword.lower() in message for message in messages)]
         if not matched:
             continue
-        priority = _priority(document.metadata)
-        results.append(
-            {
-                "source_path": document.source_path,
-                "type": document.type,
-                "title": document.title,
-                "score": priority,
-                "content": document.body.strip(),
-                "metadata": document.metadata,
-                "matched_terms": matched,
-                "matched_keywords": matched,
-                "match_type": "keyword",
-                "priority": priority,
-            }
-        )
-    results.sort(key=lambda item: (-item["priority"], item["source_path"]))
-    return results[:limit], warnings
+        matched_documents.append((document, matched))
+    matched_documents.sort(key=lambda item: (-_priority(item[0].metadata), item[0].source_path))
+    matched_documents = matched_documents[:limit]
+
+    results: list[dict[str, Any]] = []
+    for document, matched in matched_documents:
+        file_priority = _priority(document.metadata)
+        chunk_enabled = document.metadata.get("chunk_enabled") is not False
+        if chunk_enabled:
+            chunks = chunk_rag_document(
+                source_path=document.source_path,
+                doc_type=document.type,
+                title=document.title,
+                body=document.body,
+                metadata=document.metadata,
+                chunkable=True,
+            )
+            for chunk in chunks:
+                if not _chunk_keywords_match(chunk, messages):
+                    continue
+                chunk_priority = _priority(chunk.metadata)
+                results.append(
+                    {
+                        "source_path": chunk.source_path,
+                        "chunk_id": chunk.chunk_id,
+                        "heading_path": chunk.heading_path or [],
+                        "type": chunk.type,
+                        "title": chunk.title,
+                        "score": chunk_priority,
+                        "content": chunk.body.strip(),
+                        "metadata": chunk.metadata,
+                        "matched_terms": matched,
+                        "matched_keywords": matched,
+                        "match_type": "keyword",
+                        "priority": chunk_priority,
+                    }
+                )
+        else:
+            results.append(
+                {
+                    "source_path": document.source_path,
+                    "type": document.type,
+                    "title": document.title,
+                    "score": file_priority,
+                    "content": document.body.strip(),
+                    "metadata": document.metadata,
+                    "matched_terms": matched,
+                    "matched_keywords": matched,
+                    "match_type": "keyword",
+                    "priority": file_priority,
+                }
+            )
+    return results, warnings
 
 
 def load_scenario_file(vault: Vault, scenario_id: str, scenario_relative_path: str) -> RagDocument | None:
@@ -226,6 +261,57 @@ def list_rag_documents(
     return documents
 
 
+def session_memory_results(
+    vault: Vault,
+    scenario_id: str,
+    *,
+    allowed_session_ids: set[str],
+    recent_limit: int = DEFAULT_SESSION_MEMORY_RECENT_LIMIT,
+    important_limit: int = DEFAULT_SESSION_MEMORY_IMPORTANT_LIMIT,
+    earliest_limit: int = DEFAULT_SESSION_MEMORY_EARLIEST_LIMIT,
+    limit: int = DEFAULT_SESSION_MEMORY_LIMIT,
+    exclude_paths: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Return query-independent memory anchors for the active session lineage.
+
+    Search RAG is intentionally query-shaped. These anchors cover continuity facts
+    that should remain available even when the current user message does not
+    mention the exact earlier event.
+    """
+    if not allowed_session_ids:
+        return []
+    documents = list_rag_documents(vault, scenario_id, sources={"memory"})
+    excluded = exclude_paths or set()
+    session_documents = [
+        document
+        for document in documents
+        if document.source_path not in excluded
+        and _memory_session_id(document.metadata) in allowed_session_ids
+        and _memory_status(document.metadata) not in MEMORY_INACTIVE_STATUSES
+        and document.body.strip()
+    ]
+    if not session_documents:
+        return []
+
+    recent = sorted(session_documents, key=_memory_recent_sort_key, reverse=True)[:_safe_limit(recent_limit)]
+    important = sorted(session_documents, key=_memory_importance_sort_key, reverse=True)[:_safe_limit(important_limit)]
+    earliest = sorted(session_documents, key=_memory_earliest_sort_key)[:_safe_limit(earliest_limit)]
+
+    selected: list[RagDocument] = []
+    seen: set[str] = set()
+    for document in earliest + important + recent:
+        key = document_key(document)
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(document)
+        if len(selected) >= _safe_limit(limit):
+            break
+
+    selected.sort(key=_memory_earliest_sort_key)
+    return [_memory_result(document) for document in selected]
+
+
 def build_rag_query(
     *,
     user_message: str,
@@ -240,6 +326,79 @@ def build_rag_query(
     if state:
         parts.append(json.dumps(state, ensure_ascii=False, sort_keys=True))
     return "\n".join(part for part in parts if part)
+
+
+def _memory_result(document: RagDocument) -> dict[str, Any]:
+    return {
+        "source_path": document.source_path,
+        "chunk_id": document.chunk_id,
+        "heading_path": document.heading_path or [],
+        "type": document.type,
+        "title": document.title,
+        "score": _memory_anchor_score(document.metadata),
+        "content": document.body.strip(),
+        "metadata": document.metadata,
+        "matched_terms": [],
+        "match_type": "session_memory",
+    }
+
+
+def _memory_session_id(metadata: dict[str, Any]) -> str | None:
+    value = metadata.get("session_id")
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _memory_turn_range(metadata: dict[str, Any]) -> tuple[int, int]:
+    value = metadata.get("turn_range")
+    if isinstance(value, str):
+        match = re.fullmatch(r"\s*(\d+)\s*-\s*(\d+)\s*", value)
+        if match:
+            return int(match.group(1)), int(match.group(2))
+    turn = metadata.get("turn")
+    if isinstance(turn, int) and not isinstance(turn, bool):
+        return turn, turn
+    return 10**9, 10**9
+
+
+def _memory_importance(metadata: dict[str, Any]) -> int:
+    value = metadata.get("importance")
+    if isinstance(value, bool):
+        return 50
+    if isinstance(value, (int, float)):
+        return max(0, min(100, int(value)))
+    return 50
+
+
+def _memory_status(metadata: dict[str, Any]) -> str:
+    value = metadata.get("status")
+    if not isinstance(value, str) or not value.strip():
+        return "active"
+    return value.strip().lower()
+
+
+def _memory_recent_sort_key(document: RagDocument) -> tuple[int, int, str]:
+    start, end = _memory_turn_range(document.metadata)
+    return end, start, document.source_path
+
+
+def _memory_importance_sort_key(document: RagDocument) -> tuple[int, int, str]:
+    start, end = _memory_turn_range(document.metadata)
+    return _memory_importance(document.metadata), end, document.source_path
+
+
+def _memory_earliest_sort_key(document: RagDocument) -> tuple[int, int, str]:
+    start, end = _memory_turn_range(document.metadata)
+    return start, end, document.source_path
+
+
+def _memory_anchor_score(metadata: dict[str, Any]) -> int:
+    start, end = _memory_turn_range(metadata)
+    recency_component = 0 if end >= 10**9 else min(40, end)
+    return 100 + _memory_importance(metadata) + recency_component
+
+
+def _safe_limit(value: int) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
 
 
 def documents_under(vault: Vault, base: Path, folder: str, *, recursive: bool) -> list[RagDocument]:
@@ -261,13 +420,16 @@ def documents_under(vault: Vault, base: Path, folder: str, *, recursive: bool) -
         metadata = dict(document.frontmatter)
         if metadata.get("rag") is False:
             continue
-        documents.append(
-            RagDocument(
+        if metadata.get("keywords_enabled") is True:
+            continue  # handled exclusively by keyword trigger pipeline
+        documents.extend(
+            chunk_rag_document(
                 source_path=scenario_relative,
-                type=document_type(folder, metadata),
+                doc_type=document_type(folder, metadata),
                 title=document_title(path, metadata),
-                body=document.body.strip(),
+                body=document.body,
                 metadata=metadata,
+                chunkable=folder in {"memory", "lore"},
             )
         )
     return documents
@@ -307,6 +469,27 @@ def _keyword_list(value: object, *, source_path: str) -> list[str]:
             seen.add(keyword)
             keywords.append(keyword)
     return keywords
+
+
+def _chunk_keywords_match(chunk: "RagDocument", messages: list[str]) -> bool:
+    """Return True if this chunk should be included based on its own keywords.
+
+    locus-rag chunks with keywords are only included when at least one keyword
+    matches the messages. Chunks without keywords (heading chunks, or locus-rag
+    chunks that omit keywords) are always included.
+
+    Uses metadata["locus_rag"]["keywords"] (chunk-own) rather than metadata["keywords"]
+    (which merges file-level frontmatter keywords and would cause false positives).
+    """
+    if chunk.metadata.get("chunk_type") != "locus-rag":
+        return True
+    locus_data = chunk.metadata.get("locus_rag")
+    if not isinstance(locus_data, dict):
+        return True
+    chunk_keywords = locus_data.get("keywords")
+    if not chunk_keywords:
+        return True
+    return any(kw.lower() in message for kw in chunk_keywords for message in messages)
 
 
 def _priority(metadata: dict[str, Any]) -> int | float:

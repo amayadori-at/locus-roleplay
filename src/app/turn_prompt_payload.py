@@ -18,6 +18,7 @@ def latest_prompt_payload(
     rag_debug: list[dict[str, Any]] | None = None,
     recent_log_selection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    request_payload = _request_payload(profile, messages)
     return {
         "scenario_id": scenario_id,
         "session_id": session_id,
@@ -31,6 +32,7 @@ def latest_prompt_payload(
             "top_p": profile.data.get("top_p"),
             "max_tokens": profile.data.get("max_tokens"),
         },
+        "request_payload": request_payload,
         "messages": messages,
         "message_count": len(messages),
         "character_count": sum(len(message.get("content", "")) for message in messages),
@@ -40,3 +42,28 @@ def latest_prompt_payload(
         "rag_debug": rag_debug or [],
         "saved_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
     }
+
+
+def _request_payload(profile: ModelProfile, messages: list[dict[str, str]]) -> dict[str, Any]:
+    data = profile.data
+    payload: dict[str, Any] = {
+        "model": data.get("model"),
+        "messages": messages,
+    }
+    for optional in (
+        "temperature",
+        "top_p",
+        "top_k",
+        "max_tokens",
+        "stop",
+        "frequency_penalty",
+        "presence_penalty",
+        "repetition_penalty",
+    ):
+        if optional in data:
+            payload[optional] = data[optional]
+    if data.get("response_format") is not None:
+        payload["response_format"] = data["response_format"]
+    if isinstance(data.get("reasoning_effort"), str) and data["reasoning_effort"]:
+        payload["reasoning_effort"] = data["reasoning_effort"]
+    return payload

@@ -29,6 +29,7 @@ PROMPT_GRAPH_NODE_TYPES = frozenset(
     }
 )
 REQUIRED_NODE_IDS = frozenset({"system_prompt", "selected_persona", "current_state", "recent_log", "current_user_message"})
+RAG_SOURCES = frozenset({"memory", "lore", "characters"})
 
 
 class PromptGraphError(VaultError):
@@ -222,6 +223,8 @@ def _validate_node(vault: Vault, scenario_id: str, node: object, index: int) -> 
         path = vault.resolve(f"rp/scenarios/{scenario_id}/{source_path}")
         if required and not path.is_file():
             raise PromptGraphError(f"Required file node '{node_id}' does not exist: {source_path}")
+    if node_type == "rag":
+        _validate_rag_node(node_id, node)
     if "token_budget" in node and (
         not isinstance(node["token_budget"], (int, float)) or isinstance(node["token_budget"], bool) or node["token_budget"] < 0
     ):
@@ -229,6 +232,32 @@ def _validate_node(vault: Vault, scenario_id: str, node: object, index: int) -> 
     if "token_budgets" in node:
         _validate_token_budgets(node_id, node["token_budgets"])
     return normalized
+
+
+def _validate_rag_node(node_id: str, node: dict[str, Any]) -> None:
+    if "source" in node:
+        source = node["source"]
+        if not isinstance(source, list) or not source:
+            raise PromptGraphError(f"Prompt graph node '{node_id}' source must be a non-empty array")
+        if not all(isinstance(item, str) for item in source):
+            raise PromptGraphError(
+                f"Prompt graph node '{node_id}' source must contain only: {', '.join(sorted(RAG_SOURCES))}"
+            )
+        invalid = [item for item in source if item not in RAG_SOURCES]
+        if invalid:
+            raise PromptGraphError(
+                f"Prompt graph node '{node_id}' source must contain only: {', '.join(sorted(RAG_SOURCES))}"
+            )
+    if "limit" in node and (not isinstance(node["limit"], int) or isinstance(node["limit"], bool) or node["limit"] < 0):
+        raise PromptGraphError(f"Prompt graph node '{node_id}' limit must be a non-negative integer")
+    if "keyword_token_budget" in node and (
+        not isinstance(node["keyword_token_budget"], (int, float))
+        or isinstance(node["keyword_token_budget"], bool)
+        or node["keyword_token_budget"] < 0
+    ):
+        raise PromptGraphError(f"Prompt graph node '{node_id}' keyword_token_budget must be a non-negative number")
+    if "limits" in node:
+        _validate_rag_limits(node_id, node["limits"])
 
 
 def _validate_source_path(value: str, node_id: str) -> str:
@@ -268,6 +297,17 @@ def _validate_token_budgets(node_id: str, value: object) -> None:
             raise PromptGraphError(f"Prompt graph node '{node_id}' token_budgets keys must be non-empty strings")
         if not isinstance(budget, (int, float)) or isinstance(budget, bool) or budget < 0:
             raise PromptGraphError(f"Prompt graph node '{node_id}' token_budgets values must be non-negative numbers")
+
+
+def _validate_rag_limits(node_id: str, value: object) -> None:
+    """Validate optional per-type count limits on a rag node (counts are integers)."""
+    if not isinstance(value, dict):
+        raise PromptGraphError(f"Prompt graph node '{node_id}' limits must be an object")
+    for key, cap in value.items():
+        if not isinstance(key, str) or not key.strip():
+            raise PromptGraphError(f"Prompt graph node '{node_id}' limits keys must be non-empty strings")
+        if not isinstance(cap, int) or isinstance(cap, bool) or cap < 0:
+            raise PromptGraphError(f"Prompt graph node '{node_id}' limits values must be non-negative integers")
 
 
 def _validate_edges(nodes: list[dict[str, Any]], value: object) -> list[dict[str, str]]:
@@ -357,16 +397,16 @@ def _node(node_id: str, node_type: str, order: int, **extra: Any) -> dict[str, A
     return {"id": node_id, "type": node_type, "order": order, **extra}
 
 
-def has_start_prompt_graph(vault: Vault, scenario_id: str, start_id: str) -> bool:
+def has_start_prompt_graph(vault: Vault, scenario_id: str, starting_id: str) -> bool:
     _validate_scenario_id(scenario_id)
-    _validate_start_id(start_id)
-    return vault.resolve(_start_prompt_graph_path(scenario_id, start_id)).exists()
+    _validate_starting_id(starting_id)
+    return vault.resolve(_start_prompt_graph_path(scenario_id, starting_id)).exists()
 
 
-def read_start_prompt_graph(vault: Vault, scenario_id: str, start_id: str) -> dict[str, Any]:
+def read_start_prompt_graph(vault: Vault, scenario_id: str, starting_id: str) -> dict[str, Any]:
     _validate_scenario_id(scenario_id)
-    _validate_start_id(start_id)
-    path = _start_prompt_graph_path(scenario_id, start_id)
+    _validate_starting_id(starting_id)
+    path = _start_prompt_graph_path(scenario_id, starting_id)
     if not vault.resolve(path).exists():
         base = read_prompt_graph(vault, scenario_id)
         return {"graph": base, "own_graph": False, "source": "scenario"}
@@ -379,11 +419,11 @@ def read_start_prompt_graph(vault: Vault, scenario_id: str, start_id: str) -> di
     return {"graph": graph, "own_graph": True, "source": "start"}
 
 
-def write_start_prompt_graph(vault: Vault, scenario_id: str, start_id: str, graph: dict[str, Any]) -> dict[str, Any]:
+def write_start_prompt_graph(vault: Vault, scenario_id: str, starting_id: str, graph: dict[str, Any]) -> dict[str, Any]:
     _validate_scenario_id(scenario_id)
-    _validate_start_id(start_id)
+    _validate_starting_id(starting_id)
     normalized = validate_prompt_graph(vault, scenario_id, graph)
-    path = vault.resolve(_start_prompt_graph_path(scenario_id, start_id))
+    path = vault.resolve(_start_prompt_graph_path(scenario_id, starting_id))
     path.parent.mkdir(parents=True, exist_ok=True)
     raw = json.dumps(normalized, ensure_ascii=False, indent=2) + "\n"
     temp_path = path.with_name(f".{path.name}.tmp")
@@ -396,8 +436,8 @@ def write_start_prompt_graph(vault: Vault, scenario_id: str, start_id: str, grap
     return normalized
 
 
-def _start_prompt_graph_path(scenario_id: str, start_id: str) -> str:
-    return f"rp/scenarios/{scenario_id}/startings/{start_id}/prompt_graph.json"
+def _start_prompt_graph_path(scenario_id: str, starting_id: str) -> str:
+    return f"rp/scenarios/{scenario_id}/startings/{starting_id}/prompt_graph.json"
 
 
 def _prompt_graph_path(scenario_id: str) -> str:
@@ -409,6 +449,6 @@ def _validate_scenario_id(scenario_id: str) -> None:
         raise PromptGraphError(f"Invalid scenario id: {scenario_id}")
 
 
-def _validate_start_id(start_id: str) -> None:
-    if not is_locus_id(start_id):
-        raise PromptGraphError(f"Invalid start id: {start_id}")
+def _validate_starting_id(starting_id: str) -> None:
+    if not is_locus_id(starting_id):
+        raise PromptGraphError(f"Invalid start id: {starting_id}")

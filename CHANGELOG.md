@@ -1,5 +1,176 @@
 # CHANGELOG
 
+## v1.2.5 (2026-06-13)
+
+### 新機能
+
+- favicon を追加 — ブラウザタブやブックマークに Locus RP 専用アイコンが表示されるようになった
+
+### バグ修正
+
+- 一部の API でエラー応答の生成に失敗していた問題を修正 — 共通のエラー応答ヘルパが未定義のまま参照されており、該当する不正リクエスト・未検出・競合の経路でエラーを正しく返せなかった。`bad_request` / `not_found` / `conflict` を返すよう修正
+
+### 内部改善（リファクタリング）
+
+- backend の API 実装を単一ファイルから `app/api` パッケージへ分割 — common / assets / personas_profiles / prompt_graphs / rag_memory / scenarios / sessions / turns / router に整理し、機能ドメインごとに見通しを改善（外部から見た API の振る舞いは不変）
+- 巨大化していた backend テストをドメイン別ファイルへ分割 — `test_api.py` を personas_profiles / prompt_graphs / rag_memory / scenarios / sessions / turns に再編し、共通ヘルパを `api_test_helpers.py` に集約
+- frontend の画面コンポーネントを分割 — Scenario Editor を Prompt / Knowledge / SourceTree タブへ、Session 画面を Sidebar / ChatPanel へ切り出し、各ページの責務を整理
+- ターン処理ロジックを `turnEngine.svelte.js` として Session 画面から分離 — 通常応答・ストリーミング・再生成・後処理の流れを独立モジュール化し、対応するターンフローのテストを追加
+- frontend 全コンポーネントを Svelte 5 runes 形式へ移行し、プロジェクト全体で runes mode を強制 — 旧来のリアクティブ構文を統一
+- 使われなくなった固定順序プロンプト合成（`compose_gm_messages` / `PromptContext`）を削除 — 実ターンは Prompt Graph 経由の合成に一本化済み。あわせて backend の未使用 import / 変数を整理
+
+### 互換性メモ
+
+- 既存セッションログ・State・Prompt Graph・Memory Markdown・シナリオデータは引き続き読み込み可能（Vault データ形式に変更なし）
+- 旧静的UI（`web/` 配下の HTML / JS / CSS）を削除 — 現行フロントエンドは `src/frontend/` の Svelte アプリに完全移行済みのため、利用上の影響はない
+
+---
+
+## v1.2.4 (2026-06-06)
+
+### 新機能
+
+- Memory 整理支援を追加 — 生成済み Memory の重複・解決済み項目・古くなった内容を見直すための提案を作成し、確認してから適用できるようになった
+- Session 画面から Memory を確認・管理できるように改善 — 現在のセッションに関係する Memory を表示し、本文を確認しながら status を変更できる
+- シナリオエディタの Knowledge タブを拡張 — Memory を種類・状態・由来・RAG対象・キャラクター・場所・トピックで絞り込み、RAG対象の切り替えや resolved 化を画面上で行える
+
+### 既存機能の改善
+
+- RAG が現在のセッション履歴に紐づく Memory をより安定して参照するよう改善 — 別セッション由来の Memory が混ざりにくくなり、同一セッション内の重要な出来事を拾いやすくなった
+- Memory の status / importance / last_seen などのメタデータを RAG 評価に反映 — resolved / superseded / archived の Memory は通常検索から除外され、重要度や直近性が検索結果に反映される
+- RAG node で memory / lore / character ごとの件数上限を設定可能に — 取得件数を種類別に調整し、特定種類だけが検索結果を占有しにくくなった
+- 最新送信 Prompt の確認画面を改善 — 実際に送った request payload、messages、RAG検索結果、token情報を分けて確認できるようになった
+- RAG Context の表示を改善 — 長い Query や source path を確認しやすくし、検索結果を種類ごとに見やすく整理
+- Scenario Editor の Vault Tree を改善 — ファイルの絞り込みとカテゴリ別表示により、シナリオ構成ファイルを探しやすくなった
+- セッションごとの RP profile / summary profile を Session 画面から変更できるようになった
+- Markdown 表示でテーブルに対応 — セッションログや Memory 本文内の表を読みやすく表示できる
+- GM 応答時間を記録・表示するよう改善 — 通常応答と再生成候補ごとの所要時間を確認できる
+- キャラクター立ち絵の bustup が `.png` 以外の画像形式にも対応
+
+### バグ修正
+
+- 非ストリーミング応答やページ再読み込み時に、未完了の応答生成・State / Memory 後処理を復帰しやすくした
+- セッション削除時に、そのセッションで生成された Memory が残り続ける問題を修正
+- Memory や RAG の長いファイル名・path が画面表示を崩す問題を修正
+- Prompt タブでプロンプト順をドラッグアンドドロップした際の不要な console 出力を削除
+
+### 互換性メモ
+
+- 既存セッションログ・State・Prompt Graph・Memory Markdown は引き続き読み込み可能
+- Memory frontmatter に status や source などのメタデータがない場合は、既定値として扱われる
+- resolved / superseded / archived にした Memory は通常の RAG 検索対象から外れる。必要な場合は status を active に戻してください
+
+---
+
+## v1.2.3 (2026-05-26)
+
+### Prompt Graph エディタ改善
+
+- RAG node の詳細設定を Prompt Graph エディタから編集可能に — これまで JSON 直編集が必要だった以下の設定を、Prompt タブの編集 UI から操作できるようになった
+  - source 選択（memory / lore / characters をチェックボックスで切り替え）— memory 専用・lore 専用など用途を絞った RAG node を JSON 編集なしで作成できる
+  - type 別 token budget（`token_budgets.memory` / `token_budgets.lore` / `token_budgets.character`）— lore が default 2400 tokens で頭打ちになる問題を UI から調整できる
+  - keyword-triggered lore budget（`keyword_token_budget`）— keyword で引き込む Lore のトークン上限を UI から調整できる
+- Visual view の RAG `limit` 編集を追加 — Table view にはあったが Visual view に欠けていた取得件数上限の入力欄を、Visual detail panel にも追加
+- Table view に node の追加・削除を追加 — Table view は node の並び替えと field 編集のみ可能で、追加・削除は Visual view でしか操作できなかった。Mobile では Visual view が無効化されるため、mobile から node 構成を変更できない問題を解消
+- Table view と Visual view の編集可能範囲を統一 — view 間で編集できる設定に差があった。追加・削除・複製・上下移動・type 変更・role・required・condition・file path・RAG 設定・session_log budget の編集を両 view で操作可能に。view の違いは操作方法の違いのみになった
+- 新規 RAG node 作成時に実用的な初期値を補完 — node type を `rag` にした直後から、source・limit・token_budget・keyword_token_budget・token_budgets が適切な値で埋まった状態になる。既存 graph 読み込み時には補完しない
+
+### RAG の改善
+
+- ひらがな専用 n-gram の除外閾値を 4 文字以下に拡張 — 「された」「だった」「っていた」など 3〜4 文字の活用語尾・機能語が n-gram クエリ用語に混入しなくなった。5 文字以上のひらがな語（「されていた」等）は引き続き通す
+- stopword を大幅拡充 — 指示詞（この/その/あの/どの）、活用語尾（された/だった/している/していた/という/といった/ような）、丁寧語（です/ます/します/でした/ました）、汎用動詞（する/ある/いる/なる/言う/見る/思う/感じる）を追加。カタカナ固有名詞・漢字語・英数字語は影響を受けない
+- locus-rag の `keywords` マッチへの加点 — `<locus-rag keywords="...">` に設定したキーワードとクエリが一致した場合、Vault 作者が意図した検索シグナルとして高く評価されるようになった。偶発的な本文マッチの heading チャンクより優先されやすくなる
+- locus-rag の `priority` 属性サポート — `<locus-rag priority="25">` でチャンク単位の優先度を数値指定可能に。不正な値（非数値）は無視してエラーにならない
+- memory recency スコア — frontmatter の `created` 日付が新しい memory を優先的に Prompt へ投入。直近 30 日以内の memory ほど優先度が高く、古いほど下がる。日付フィールドが欠落・不正な場合は通常の重みで評価
+- `keywords_enabled: true` によるキーワードトリガー専用化 — frontmatter に `keywords_enabled: true` を設定したファイルは、設定した keywords がクエリに登場したときのみ Prompt へ投入される。クエリの内容語マッチによる意図しない投入がなくなるため、組織・設定系 Lore を確実な条件でのみ参照させたい場合に有効
+- `chunk_enabled` フラグによるキーワードトリガーのセクション投入対応 — `chunk_enabled: true`（デフォルト）でキーワードトリガーが locus-rag / 見出し単位のセクションごとに投入されるようになった。ファイル全体でなく必要な箇所だけを Prompt に載せられる。`chunk_enabled: false` で旧来のファイル全文投入を維持できる。locus-rag チャンクに独自 `keywords` がある場合はセクション単位でさらにフィルタリング
+
+### バックエンド改善
+
+- RAG node 保存時の validation を追加 — `source` の値が `memory` / `lore` / `characters` 以外の場合、`limit` / `keyword_token_budget` が非負数でない場合に保存を拒否して明確なエラーを返す
+- Prompt プレビューの RAG デバッグ情報を拡充 — 最新 Prompt プレビューの RAG ノード詳細に source・limit・token_budget・keyword_token_budget・token_budgets・取得件数・採用件数を表示。RAG node の設定が実際の Prompt にどう反映されたか確認しやすくなった
+
+### 互換性メモ
+
+- 既存セッションログ・State・Prompt Graph のデータ形式は引き続き読み込み可能
+- RAG スコアリング・keywords_enabled 対応の変更により、キーワードインデックスのバージョンを v3→v4 に更新。初回起動時に自動で再構築される（シナリオ規模によっては時間がかかる場合がある）
+- `keywords_enabled: true` を設定した既存 Lore ファイルは、n-gram RAG から除外されキーワードトリガー専用になる。挙動の変化を意図しない場合は `keywords_enabled: false` を明示するか、frontmatter からフィールドを削除してください
+
+---
+
+## v1.2.2 (2026-05-26)
+
+### バグ修正
+
+- RAG キーワード展開の誤ヒットを修正 — 日本語 n-gram の最小サイズを2文字から3文字に引き上げ。「ランダム」の「ラン」が「フランス」に部分一致するなど、無関係なキャラクターや Lore が召喚されやすかった問題を解消。2文字の重要語（「召喚」「魔力」など）は正規表現マッチで先に抽出されるため、検索精度への影響はない
+- `<reasoning>` ブロックがセッションログや後処理に混入する問題を修正 — DeepSeek 等の Thinking モデルを使用した場合、モデルの推論過程が `log.jsonl` に保存され、次ターンの GM プロンプト・State 更新・Memory 要約に入り込んでいた。ログ保存と後処理への受け渡し前に自動で除去するよう変更。フロントエンドへのストリーミング表示は従来どおり
+- 修正前に保存されたログの `<reasoning>` が次ターンに再混入する問題を修正 — 過去のセッションログに残った reasoning ブロックを、プロンプト組み立て・State 更新・Memory 要約への投入前に除去するよう変更。既存の `log.jsonl` 本体は書き換えない
+- 再生成候補に古い `<reasoning>` が復活する問題を修正 — 初回再生成時に既存本文を候補 0 としてコピーする際、reasoning ブロックが除去されずに残っていた。コピー時にも strip を適用するよう修正
+- 再生成候補と State が不一致になる問題を修正 — 再生成経路で State 更新クライアントが渡らない場合に候補 State が生成されず、候補を切り替えると GM 応答だけ変わって State は古い候補のままになっていた。再生成でも通常ターンと同様に候補ごとに State を生成・保存するよう変更。対応する候補 State がない場合は古い State を誤って復元しない
+
+### 既存機能の改善
+
+- RAG n-gram の語境界またぎを抑制 — 3〜6文字 n-gram を全文連結に対して生成していたため、「ダム召」「召喚を」のように意味単位をまたぐ語が展開されていた。スクリプト分割・助詞分割後の語単位で n-gram を生成するよう変更し、誤ヒットをさらに低減
+- キャラクター RAG をデフォルト完全一致に変更 — 「古代」などの一般語でキャラクターが意図せず Prompt に注入され、LLM の選択が偏る問題を抑制。完全一致モードでは名前・別名・タグ・明示キーワードへの一致のみでキャラクターを取得する。部分一致が必要なシナリオはシナリオ設定で `character_rag.match: fuzzy` を指定することで従来の挙動に戻せる。Pinned キャラクターや State で確定済みのキャラクターは設定に関係なく注入される
+
+### 互換性メモ
+
+- 既存セッションログ・State のデータ形式は引き続き読み込み可能
+- キャラクター RAG のデフォルト挙動が変わった。既存シナリオで部分一致による幅広いキャラクター取得を利用していた場合は、`scenario.md` の frontmatter に `character_rag.match: fuzzy` を追加することで従来の動作を維持できる
+- キーワードインデックスのバージョンを更新。初回起動時に自動で再構築される（シナリオ規模によっては時間がかかる場合がある）
+
+---
+
+## v1.2.1 (2026-05-25)
+
+### バグ修正
+
+- GM 応答を再生成すると自分の発言が Prompt に2回入る問題を修正
+- 再生成後に Prompt プレビューが更新されない問題を修正 — 通常ターンでは Prompt 確認画面が最新内容に更新されるが、再生成後は更新されず表示と実際に送った内容がずれていた
+- 再生成時にそのターン以降の State が Prompt に混入する問題を修正 — 過去ターンの GM 応答を再生成する際、そのターンが実行された時点の State ではなく現在の State が参照されていた。再生成では対象ターンの直前のスナップショットを使うよう変更
+- 再生成候補を切り替えても State が切り替わらない問題を修正 — 複数の再生成候補を作成して切り替えると、GM の返答は変わるが State は最後に生成した候補のままだった。候補ごとに State を保存し、候補の切替に合わせて State も復元するよう変更
+
+### 既存機能の改善
+
+- キャラクター RAG の誤ヒットを低減 — キャラクタープロンプト本文中の一般的な語でキャラクターが意図せず選ばれやすかった問題を改善。検索対象を名前・別名・タグ・検索語などのメタデータに絞り、ヒット後の本文全文投入は従来どおり維持
+- Lore / Memory の検索精度を向上 — Markdown 見出し単位、または `<locus-rag>` タグで明示した範囲単位で取り出せるようになった。ファイルが長い場合でも関係のある箇所だけを Prompt に投入できる
+
+### 互換性メモ
+
+- 既存のセッションログ・State・Prompt のデータ形式は引き続き読み込み可能
+- 再生成候補の State がセッションごとに保存されるようになった。既存セッションに候補 State がない場合、初回再生成時に自動で移行
+- キーワードインデックスおよびベクターインデックスのバージョンを更新。初回起動時に既存インデックスが自動で再構築される（シナリオ規模によっては時間がかかる場合がある）
+
+---
+
+## v1.2.0 (2026-05-22)
+
+### バグ修正
+
+- ストリーミング応答中の次ターン送信ブロック漏れを修正 — GM 応答の後処理（state・memory 更新）が完了する前に次の入力が可能になっていた問題を解消。後処理の完了を待ってから送信を解放するよう変更
+- 新規セッション作成時に Starting セレクターが2つ表示される問題を修正
+- フロントページのシナリオ説明で Markdown 箇条書き（`-` リスト）が正しく描画されない問題を修正
+- デスクトップ表示で State / Timeline パネルの閉じるボタンが機能しない問題を修正 — 初期実装からデスクトップ向けのパネル開閉手段が欠落していた
+
+### 新機能
+
+- シナリオ ZIP エクスポート — フロントページのシナリオ詳細からシナリオを ZIP ファイルとしてダウンロード。セッションログ・Memory は除外され、シナリオ定義ファイルと画像アセットのみが含まれる
+- シナリオ ZIP インポート — ZIP ファイルからシナリオをインポート。既存シナリオと ID が衝突した場合はエラー
+- シナリオエディタ Memory タブ — シナリオに紐づく長期記憶ファイルの一覧表示と個別削除
+- デスクトップでの右パネル開閉 — セッション画面の State / Timeline パネルをデスクトップ表示でも開閉可能に
+
+### 既存機能の改善
+
+- 画像アセット対応フォーマット拡張 — キャラクター画像に `.png` 以外に `.jpg` / `.jpeg` / `.webp` / `.gif` を使用可能に
+- シナリオ一覧の絞り込みフィルター追加 — シナリオ名・ID でリストを絞り込む入力フィールドを追加
+- セッション一覧のデフォルトソートを更新日時の降順に変更
+- シナリオ Export ボタンをフロントページに移動 — Import と同じ操作場所（シナリオ詳細の右上）に統一
+- Export / Import アイコンを専用アイコンに変更し、視覚的に区別しやすく改善
+- ZIP インポートのエラー表示を改善 — シナリオリスト内インライン表示からアラートダイアログに変更
+- Starting 選択子を `starting_id` に統一 — セッション作成と per_start モードで Starting の参照が一貫して動作するよう修正
+
+---
+
 ## v1.1.0 (2026-05-21)
 
 ### バグ修正

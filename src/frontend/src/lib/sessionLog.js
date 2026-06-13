@@ -67,7 +67,7 @@ export function appendStreamingDeltaToMessages(messages, delta) {
  * @param {string} userMessage
  * @param {Record<string, any>} turn
  * @param {boolean} usedStream
- * @returns {Array<T | { role: string, content: string, segments?: Array<Record<string, any>>, turn: number }>}
+ * @returns {Array<T | { role: string, content: string, segments?: Array<Record<string, any>>, turn: number, response_duration_ms?: number }>}
  */
 export function finalizeTurnMessages(messages, userMessage, turn, usedStream) {
   const pendingCount = usedStream ? 2 : 1;
@@ -78,7 +78,8 @@ export function finalizeTurnMessages(messages, userMessage, turn, usedStream) {
       role: "assistant",
       content: turn.assistant_content || "",
       segments: turn.segments || [],
-      turn: turn.turn
+      turn: turn.turn,
+      response_duration_ms: turn.response_duration_ms
     }
   ];
 }
@@ -112,8 +113,58 @@ export function updateRegeneratingAssistantMessage(messages, turn, content) {
     }
     const updated = { ...message, content, streaming: true };
     delete updated.segments;
+    delete updated.response_duration_ms;
     return updated;
   });
+}
+
+/**
+ * @template {Record<string, any>} T
+ * @param {T[]} messages
+ * @param {number} sourceTurn
+ * @param {string} content
+ * @returns {Array<T | { role: string, content: string, streaming: boolean, continued_from_turn: number }>}
+ */
+export function updateStreamingContinuedAssistantMessage(messages, sourceTurn, content) {
+  const last = messages[messages.length - 1];
+  if (
+    last &&
+    last.role === "assistant" &&
+    last.streaming &&
+    last.continued_from_turn === sourceTurn
+  ) {
+    return [
+      ...messages.slice(0, -1),
+      {
+        ...last,
+        content,
+        streaming: true,
+        continued_from_turn: sourceTurn
+      }
+    ];
+  }
+  return [
+    ...messages,
+    {
+      role: "assistant",
+      content,
+      streaming: true,
+      continued_from_turn: sourceTurn
+    }
+  ];
+}
+
+/**
+ * @param {Record<string, any>} message
+ * @returns {string}
+ */
+export function formatResponseDuration(message) {
+  const value = message?.response_duration_ms;
+  if (!Number.isFinite(value) || value < 0) return "";
+  const milliseconds = Math.round(value);
+  if (milliseconds < 1000) return `LLM ${milliseconds}ms`;
+  const seconds = milliseconds / 1000;
+  return `LLM ${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)}s`;
 }
 
 /**

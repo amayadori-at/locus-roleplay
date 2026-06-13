@@ -2,43 +2,101 @@
   import { RefreshCcw } from "lucide-svelte";
   import { renderMarkdown } from "./markdown.js";
   import { t, translateNow } from "./i18n.js";
+  import { formatHeadingPath, formatMatchedTerms, groupedRagSources } from "./ragSources.js";
 
-  export let scenarioId = "";
-  export let sessionNoteDraft = "";
-  export let sceneNoteDraft = "";
-  export let settingsSaving = false;
-  export let settingsMessage = "";
-  export let saveSessionSettings = () => {};
-  export let pinsLoading = false;
-  export let pinsSaving = false;
-  export let pinsMessage = "";
-  /** @type {Record<string, any> | null} */
-  export let pinsData = null;
-  export let toggleMod = (/** @type {string} */ _path) => {};
-  export let togglePinnedCharacter = (/** @type {string} */ _path) => {};
-  export let promptPreviewLoading = false;
-  export let promptPreviewError = "";
-  /** @type {Record<string, any> | null} */
-  export let promptPreview = null;
-  export let openRagSource = (/** @type {string} */ _path) => {};
-  export let ragStatusLoading = false;
-  export let ragStatusError = "";
-  /** @type {Record<string, any> | null} */
-  export let ragStatus = null;
-  export let ragRebuildRunning = false;
-  export let ragRebuildMessage = "";
-  export let rebuildRagIndex = () => {};
-  export let memoryLoading = false;
-  export let memoryError = "";
-  /** @type {Record<string, any> | null} */
-  export let memoryList = null;
-  export let activeMemoryPath = "";
-  /** @type {Record<string, any> | null} */
-  export let selectedMemoryItem = null;
-  export let loadMemoryList = (/** @type {string} */ _scenarioId) => {};
+  /** @type {{
+   *   scenarioId?: string,
+   *   sessionId?: string,
+   *   sessionNoteDraft?: string,
+   *   sceneNoteDraft?: string,
+   *   settingsSaving?: boolean,
+   *   settingsMessage?: string,
+   *   saveSessionSettings?: () => void,
+   *   pinsLoading?: boolean,
+   *   pinsSaving?: boolean,
+   *   pinsMessage?: string,
+   *   pinsData?: Record<string, any> | null,
+   *   toggleMod?: (path: string) => void,
+   *   togglePinnedCharacter?: (path: string) => void,
+   *   promptPreviewLoading?: boolean,
+   *   promptPreviewError?: string,
+   *   promptPreview?: Record<string, any> | null,
+   *   openRagSource?: (path: string) => void,
+   *   ragStatusLoading?: boolean,
+   *   ragStatusError?: string,
+   *   ragStatus?: Record<string, any> | null,
+   *   ragRebuildRunning?: boolean,
+   *   ragRebuildMessage?: string,
+   *   rebuildRagIndex?: () => void,
+   *   memoryLoading?: boolean,
+   *   memoryError?: string,
+   *   memoryList?: Record<string, any> | null,
+   *   memoryStatusSaving?: boolean,
+   *   memoryStatusMessage?: string,
+   *   activeMemoryPath?: string,
+   *   selectedMemoryItem?: Record<string, any> | null,
+   *   loadMemoryList?: (scenarioId: string, sessionId: string) => void,
+   *   updateMemoryStatus?: (item: Record<string, any>, status: string) => void,
+   * }} */
+  let {
+    scenarioId = "",
+    sessionId = "",
+    sessionNoteDraft = $bindable(""),
+    sceneNoteDraft = $bindable(""),
+    settingsSaving = false,
+    settingsMessage = "",
+    saveSessionSettings = () => {},
+    pinsLoading = false,
+    pinsSaving = false,
+    pinsMessage = "",
+    pinsData = null,
+    toggleMod = (_path) => {},
+    togglePinnedCharacter = (_path) => {},
+    promptPreviewLoading = false,
+    promptPreviewError = "",
+    promptPreview = null,
+    openRagSource = (_path) => {},
+    ragStatusLoading = false,
+    ragStatusError = "",
+    ragStatus = null,
+    ragRebuildRunning = false,
+    ragRebuildMessage = "",
+    rebuildRagIndex = () => {},
+    memoryLoading = false,
+    memoryError = "",
+    memoryList = null,
+    memoryStatusSaving = false,
+    memoryStatusMessage = "",
+    activeMemoryPath = $bindable(""),
+    selectedMemoryItem = null,
+    loadMemoryList = (_scenarioId, _sessionId) => {},
+    updateMemoryStatus = (_item, _status) => {}
+  } = $props();
 
-  function promptJson() {
-    return JSON.stringify(promptPreview?.prompt || {}, null, 2);
+  const memoryStatusOptions = ["active", "resolved", "superseded", "stale", "archived"];
+  const currentMemoryItem = $derived(resolveMemoryItem(memoryList, activeMemoryPath) || selectedMemoryItem);
+
+  function requestPayloadJson() {
+    return JSON.stringify(promptPreview?.prompt?.request_payload || {}, null, 2);
+  }
+
+  function messagesJson() {
+    return JSON.stringify(promptPreview?.prompt?.messages || [], null, 2);
+  }
+
+  function metadataJson() {
+    return JSON.stringify(promptMetadata(), null, 2);
+  }
+
+  function promptMetadata() {
+    const prompt = promptPreview?.prompt;
+    if (!prompt || typeof prompt !== "object") return {};
+    const {
+      request_payload: _requestPayload,
+      messages: _messages,
+      ...metadata
+    } = prompt;
+    return metadata;
   }
 
   function tokenUsage() {
@@ -61,6 +119,21 @@
     return promptPreview?.prompt?.rag_debug || [];
   }
 
+  function requestPayloadMessageCount() {
+    const messages = promptPreview?.prompt?.request_payload?.messages;
+    return Array.isArray(messages) ? messages.length : 0;
+  }
+
+  function ragSourceGroups() {
+    return groupedRagSources(promptPreview?.prompt?.rag_results);
+  }
+
+  /** @param {Record<string, any>} budgets */
+  function budgetSummary(budgets) {
+    if (!budgets || typeof budgets !== "object") return "";
+    return Object.entries(budgets).map(([key, value]) => `${key}: ${value}`).join(", ");
+  }
+
   function memoryCounts() {
     return ragStatus?.memory?.counts || {};
   }
@@ -71,6 +144,23 @@
 
   function memoryGroups() {
     return memoryList?.groups || {};
+  }
+
+  /**
+   * @param {Record<string, any> | null} list
+   * @param {string} path
+   */
+  function resolveMemoryItem(list, path) {
+    const groups = list?.groups || {};
+    let first = null;
+    for (const kind of ["session_summaries", "extracted_facts", "unresolved_threads"]) {
+      const items = groups[kind];
+      if (!Array.isArray(items)) continue;
+      if (!first && items.length) first = items[0];
+      const found = items.find((item) => item.path === path);
+      if (found) return found;
+    }
+    return first;
   }
 
   /** @param {string} kind */
@@ -253,11 +343,34 @@
         <div><dt>Turn</dt><dd>{promptPreview.prompt?.turn ?? $t("common.unrecorded")}</dd></div>
         <div><dt>Profile</dt><dd>{promptPreview.prompt?.profile?.id || $t("common.unrecorded")}</dd></div>
         <div><dt>Model</dt><dd>{promptPreview.prompt?.profile?.model || $t("common.unrecorded")}</dd></div>
-        <div><dt>Messages</dt><dd>{promptPreview.prompt?.message_count ?? 0}</dd></div>
+        <div><dt>Request messages</dt><dd>{requestPayloadMessageCount()}</dd></div>
+        <div><dt>Saved messages</dt><dd>{promptPreview.prompt?.message_count ?? 0}</dd></div>
         <div><dt>Characters</dt><dd>{promptPreview.prompt?.character_count ?? 0}</dd></div>
         <div><dt>Saved</dt><dd>{promptPreview.prompt?.saved_at || $t("common.unrecorded")}</dd></div>
       </dl>
-      <pre class="prompt-preview-block">{promptJson()}</pre>
+      <div class="latest-prompt-parts">
+        <section class="latest-prompt-part" aria-labelledby="latest-request-payload-heading">
+          <div>
+            <h5 id="latest-request-payload-heading">{$t("settings.latestPromptRequestPayload")}</h5>
+            <p class="placeholder-copy">{$t("settings.latestPromptRequestPayloadDesc")}</p>
+          </div>
+          <pre class="prompt-preview-block">{requestPayloadJson()}</pre>
+        </section>
+        <section class="latest-prompt-part" aria-labelledby="latest-messages-heading">
+          <div>
+            <h5 id="latest-messages-heading">{$t("settings.latestPromptMessages")}</h5>
+            <p class="placeholder-copy">{$t("settings.latestPromptMessagesDesc")}</p>
+          </div>
+          <pre class="prompt-preview-block">{messagesJson()}</pre>
+        </section>
+        <section class="latest-prompt-part" aria-labelledby="latest-metadata-heading">
+          <div>
+            <h5 id="latest-metadata-heading">{$t("settings.latestPromptMetadata")}</h5>
+            <p class="placeholder-copy">{$t("settings.latestPromptMetadataDesc")}</p>
+          </div>
+          <pre class="prompt-preview-block">{metadataJson()}</pre>
+        </section>
+      </div>
     {:else}
       <p class="placeholder-copy">
         {promptPreview?.message || $t("settings.noPromptYet2")}
@@ -278,38 +391,68 @@
       {#if ragDebug().length}
         <dl class="info-list compact-list">
           {#each ragDebug() as debug}
-            <div><dt>Query</dt><dd>{debug.query || $t("common.unrecorded")}</dd></div>
+            <div class="rag-query-row">
+              <dt>Query</dt>
+              <dd>
+                <textarea class="rag-query-textarea" readonly rows="4" value={debug.query || $t("common.unrecorded")}></textarea>
+              </dd>
+            </div>
             <div><dt>Sources</dt><dd>{debug.sources?.join(", ") || $t("common.unrecorded")}</dd></div>
+            <div><dt>Budget</dt><dd>total {debug.token_budget ?? $t("common.unrecorded")} / keyword {debug.keyword_token_budget ?? $t("common.unrecorded")} / {budgetSummary(debug.token_budgets)}</dd></div>
             <div><dt>Retrieved</dt><dd>{debug.retrieved_count ?? 0} / included {debug.included_count ?? 0}</dd></div>
             <div><dt>Skipped</dt><dd>{debug.skipped_reason || $t("common.none")}</dd></div>
           {/each}
         </dl>
       {/if}
-      <div class="rag-result-list">
-        {#each promptPreview.prompt.rag_results as result}
-          <article class="rag-result-card">
-            <div class="rag-result-head">
-              <strong>{result.title || result.source_path}</strong>
-              <span>{result.type || "rag"} / score {result.score ?? $t("common.unrecorded")}</span>
+      <div class="rag-source-groups">
+        {#each ragSourceGroups() as group}
+          <section class="rag-source-group" aria-label={group.label}>
+            <h5>{group.label} ({group.items.length})</h5>
+            <div class="rag-result-list">
+              {#each group.items as result}
+                <article class="rag-result-card">
+                  <div class="rag-result-head">
+                    <strong>{result.title || result.source_path}</strong>
+                    <span>{result.type || "rag"} / score {result.score ?? $t("common.unrecorded")}</span>
+                  </div>
+                  <button
+                    class="source-link-button"
+                    type="button"
+                    disabled={!result.source_path}
+                    onclick={() => openRagSource(result.source_path)}
+                  >
+                    {result.source_path}
+                  </button>
+                  <dl class="info-list compact-list rag-source-meta">
+                    {#if result.chunk_id}
+                      <div><dt>Chunk</dt><dd>{result.chunk_id}</dd></div>
+                    {/if}
+                    {#if formatHeadingPath(result.heading_path)}
+                      <div><dt>Heading</dt><dd>{formatHeadingPath(result.heading_path)}</dd></div>
+                    {/if}
+                    {#if formatMatchedTerms(result.matched_terms)}
+                      <div><dt>Matched</dt><dd>{formatMatchedTerms(result.matched_terms)}</dd></div>
+                    {/if}
+                  </dl>
+                  <p>{result.content || $t("settings.noContent")}</p>
+                </article>
+              {/each}
             </div>
-            <button
-              class="source-link-button"
-              type="button"
-              disabled={!result.source_path}
-              onclick={() => openRagSource(result.source_path)}
-            >
-              {result.source_path}
-            </button>
-            <p>{result.content || $t("settings.noContent")}</p>
-          </article>
+          </section>
         {/each}
       </div>
     {:else}
       {#if ragDebug().length}
         <dl class="info-list compact-list">
           {#each ragDebug() as debug}
-            <div><dt>Query</dt><dd>{debug.query || $t("common.unrecorded")}</dd></div>
+            <div class="rag-query-row">
+              <dt>Query</dt>
+              <dd>
+                <textarea class="rag-query-textarea" readonly rows="4" value={debug.query || $t("common.unrecorded")}></textarea>
+              </dd>
+            </div>
             <div><dt>Sources</dt><dd>{debug.sources?.join(", ") || $t("common.unrecorded")}</dd></div>
+            <div><dt>Budget</dt><dd>total {debug.token_budget ?? $t("common.unrecorded")} / keyword {debug.keyword_token_budget ?? $t("common.unrecorded")} / {budgetSummary(debug.token_budgets)}</dd></div>
             <div><dt>Retrieved</dt><dd>{debug.retrieved_count ?? 0} / included {debug.included_count ?? 0}</dd></div>
             <div><dt>Skipped</dt><dd>{debug.skipped_reason || $t("common.none")}</dd></div>
           {/each}
@@ -371,7 +514,7 @@
       <div class="memory-browser">
         <div class="panel-header compact">
           <h5>Memory Markdown</h5>
-          <button type="button" disabled={memoryLoading} onclick={() => scenarioId && void loadMemoryList(scenarioId)}>
+          <button type="button" disabled={memoryLoading} onclick={() => scenarioId && sessionId && void loadMemoryList(scenarioId, sessionId)}>
             <RefreshCcw size={14} aria-hidden="true" />
             {memoryLoading ? $t("settings.memoryReloading") : $t("settings.memoryReload")}
           </button>
@@ -388,39 +531,59 @@
                   <section>
                     <h6>{memoryKindLabel(kind)} ({memoryGroups()[kind].length})</h6>
                     {#each memoryGroups()[kind] as item}
-                      <button
-                        class:selected={selectedMemoryItem?.path === item.path}
-                        type="button"
-                        onclick={() => (activeMemoryPath = item.path)}
-                      >
-                        <strong>{item.title || item.path}</strong>
-                        <span>{item.path}</span>
-                        <small>
-                          {item.rag_enabled ? $t("settings.ragEnabled") : $t("settings.ragDisabled")} / {item.in_index ? $t("settings.indexed") : $t("settings.notIndexed")}
-                          {item.stale_created ? " / stale" : ""}
-                        </small>
-                      </button>
+                      <article class="memory-kind-item" class:selected={currentMemoryItem?.path === item.path}>
+                        <button
+                          class="memory-kind-select-button"
+                          type="button"
+                          onclick={() => (activeMemoryPath = item.path)}
+                        >
+                          <strong>{item.title || item.path}</strong>
+                          <span>{item.path}</span>
+                          <small>
+                            {item.status || "active"} / {item.rag_enabled ? $t("settings.ragEnabled") : $t("settings.ragDisabled")} / {item.in_index ? $t("settings.indexed") : $t("settings.notIndexed")}
+                            {item.stale_created ? " / stale" : ""}
+                          </small>
+                        </button>
+                      </article>
                     {/each}
                   </section>
                 {/if}
               {/each}
             </div>
-            {#if selectedMemoryItem}
+            {#if currentMemoryItem}
               <article class="memory-preview">
                 <div class="rag-result-head">
-                  <strong>{selectedMemoryItem.title || selectedMemoryItem.path}</strong>
-                  <span>{selectedMemoryItem.memory_kind || selectedMemoryItem.kind}</span>
+                  <strong>{currentMemoryItem.title || currentMemoryItem.path}</strong>
+                  <span>{currentMemoryItem.memory_kind || currentMemoryItem.kind}</span>
                 </div>
-                <button class="source-link-button" type="button" onclick={() => openRagSource(selectedMemoryItem.path)}>
-                  {selectedMemoryItem.path}
+                <button class="source-link-button" type="button" onclick={() => openRagSource(currentMemoryItem.path)}>
+                  {currentMemoryItem.path}
                 </button>
                 <dl class="info-list compact-list">
-                  <div><dt>RAG</dt><dd>{selectedMemoryItem.rag_enabled ? $t("settings.ragEnabledShort") : $t("settings.ragDisabledShort")}</dd></div>
-                  <div><dt>Index</dt><dd>{selectedMemoryItem.in_index ? "indexed" : $t("settings.notIndexed")}</dd></div>
-                  <div><dt>Stale</dt><dd>{selectedMemoryItem.stale_created ? "created after index" : $t("common.none")}</dd></div>
+                  <div>
+                    <dt>Status</dt>
+                    <dd>
+                      <select
+                        class="memory-status-select"
+                        disabled={memoryStatusSaving}
+                        value={currentMemoryItem.status || "active"}
+                        onchange={(event) => void updateMemoryStatus(currentMemoryItem, event.currentTarget.value)}
+                      >
+                        {#each memoryStatusOptions as status}
+                          <option value={status}>{status}</option>
+                        {/each}
+                      </select>
+                    </dd>
+                  </div>
+                  <div><dt>RAG</dt><dd>{currentMemoryItem.rag_enabled ? $t("settings.ragEnabledShort") : $t("settings.ragDisabledShort")}</dd></div>
+                  <div><dt>Index</dt><dd>{currentMemoryItem.in_index ? "indexed" : $t("settings.notIndexed")}</dd></div>
+                  <div><dt>Stale</dt><dd>{currentMemoryItem.stale_created ? "created after index" : $t("common.none")}</dd></div>
                 </dl>
+                {#if memoryStatusMessage}
+                  <p class="settings-message">{memoryStatusMessage}</p>
+                {/if}
                 <div class="memory-preview-body markdown-body">
-                  {@html renderMarkdown(selectedMemoryItem.content || $t("settings.noBody"))}
+                  {@html renderMarkdown(currentMemoryItem.content || $t("settings.noBody"))}
                 </div>
               </article>
             {/if}

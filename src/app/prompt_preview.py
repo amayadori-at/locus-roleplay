@@ -5,18 +5,21 @@ from typing import Any
 
 from app.loaders import ModelProfile, Persona, Scenario, load_persona, load_profile, load_scenario
 from app.messages import is_conversation_role
-from app.prompt_graph import read_prompt_graph
+from app.prompt_graph import read_prompt_graph, read_start_prompt_graph
 from app.rag import (
     DEFAULT_KEYWORD_TRIGGER_TOKEN_BUDGET,
+    DEFAULT_RAG_TYPE_TOKEN_BUDGETS,
     DEFAULT_RAG_TOKEN_BUDGET,
     budget_rag_results,
     build_rag_query,
     format_rag_results,
     keyword_triggered_lore_results,
-    load_scenario_file,
     retrieve_context,
+    session_memory_results,
 )
-from app.state_session import read_current_state, read_session_log, read_session_metadata, read_session_state
+from app.reasoning import sanitize_log_entries
+from app.scenario_settings import read_scenario_settings
+from app.state_session import ancestor_session_ids, read_current_state, read_session_log, read_session_metadata, read_session_state
 from app.token_usage import estimate_prompt_token_usage
 from app.vault import Vault, VaultError
 
@@ -36,11 +39,13 @@ def build_prompt_preview(
     session_id: str | None = None,
     persona_id: str | None = None,
     profile_id: str | None = None,
+    starting_id: str | None = None,
     user_note: str = "",
     session_note: str | None = None,
     scene_note: str | None = None,
     recent_limit: int = 12,
     recent_log_override: list[dict[str, Any]] | None = None,
+    state_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return compose_prompt_graph(
         vault,
@@ -49,11 +54,13 @@ def build_prompt_preview(
         session_id=session_id,
         persona_id=persona_id,
         profile_id=profile_id,
+        starting_id=starting_id,
         user_note=user_note,
         session_note=session_note,
         scene_note=scene_note,
         recent_limit=recent_limit,
         recent_log_override=recent_log_override,
+        state_override=state_override,
     )
 
 
@@ -65,11 +72,13 @@ def compose_prompt_graph(
     session_id: str | None = None,
     persona_id: str | None = None,
     profile_id: str | None = None,
+    starting_id: str | None = None,
     user_note: str = "",
     session_note: str | None = None,
     scene_note: str | None = None,
     recent_limit: int = 12,
     recent_log_override: list[dict[str, Any]] | None = None,
+    state_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not isinstance(user_message, str) or not user_message.strip():
         raise PromptPreviewError("user_message must be a non-empty string")
@@ -79,6 +88,7 @@ def compose_prompt_graph(
         metadata = read_session_metadata(vault, scenario_id, session_id)
         persona_id = persona_id or _metadata_string(metadata, "persona_id")
         profile_id = profile_id or _metadata_string(metadata, "rp_profile_id")
+        starting_id = starting_id or _metadata_text(metadata, "starting_id") or None
         session_note = _resolved_session_note(metadata, session_note, user_note)
         scene_note = scene_note if scene_note is not None else _metadata_text(metadata, "scene_note")
     else:
@@ -93,15 +103,21 @@ def compose_prompt_graph(
     scenario = load_scenario(vault, scenario_id)
     persona = load_persona(vault, persona_id)
     profile = load_profile(vault, profile_id)
-    state = read_session_state(vault, scenario_id, session_id) if session_id else read_current_state(vault, scenario_id)
-    if recent_log_override is not None:
-        raw_recent_log = recent_log_override
+    if state_override is not None:
+        state = state_override
     else:
-        raw_recent_log = read_session_log(vault, scenario_id, session_id) if session_id else []
-    graph = read_prompt_graph(vault, scenario_id)
+        state = read_session_state(vault, scenario_id, session_id) if session_id else read_current_state(vault, scenario_id)
+    if recent_log_override is not None:
+        raw_recent_log = sanitize_log_entries(recent_log_override)
+    else:
+        raw_recent_log = sanitize_log_entries(read_session_log(vault, scenario_id, session_id) if session_id else [])
+    graph_info = _select_prompt_graph(vault, scenario_id, starting_id)
+    graph = graph_info["graph"]
 
     active_mods: list[str] = _safe_string_list(metadata.get("active_mods"))
     pinned_characters: list[str] = _safe_string_list(metadata.get("pinned_characters"))
+    allowed_memory_session_ids = set(ancestor_session_ids(vault, scenario_id, session_id)) if session_id else None
+    current_turn = _metadata_turn_count(metadata)
 
     base_messages, _base_expansions = _compose_messages_from_graph(
         vault,
@@ -115,6 +131,8 @@ def compose_prompt_graph(
         user_message=user_message,
         active_mods=active_mods,
         pinned_characters=pinned_characters,
+        allowed_memory_session_ids=allowed_memory_session_ids,
+        current_turn=current_turn,
     )
     recent_log, recent_log_selection = _select_recent_log_for_context(
         raw_recent_log,
@@ -134,6 +152,8 @@ def compose_prompt_graph(
         user_message=user_message,
         active_mods=active_mods,
         pinned_characters=pinned_characters,
+        allowed_memory_session_ids=allowed_memory_session_ids,
+        current_turn=current_turn,
     )
 
     token_usage = estimate_prompt_token_usage(messages, profile.data)
@@ -142,7 +162,13 @@ def compose_prompt_graph(
         "session_id": session_id,
         "persona_id": persona.id,
         "profile": _profile_summary(profile),
-        "graph": {"id": graph["id"], "version": graph["version"]},
+        "graph": {
+            "id": graph["id"],
+            "version": graph["version"],
+            "source": graph_info["source"],
+            "starting_id": graph_info["starting_id"],
+            "own_graph": graph_info["own_graph"],
+        },
         "expansions": expansions,
         "messages": messages,
         "message_count": len(messages),
@@ -150,6 +176,24 @@ def compose_prompt_graph(
         "token_usage": token_usage,
         "recent_log_selection": recent_log_selection,
         "selected_recent_log": recent_log,
+    }
+
+
+def _select_prompt_graph(vault: Vault, scenario_id: str, starting_id: str | None) -> dict[str, Any]:
+    settings = read_scenario_settings(vault, scenario_id)
+    if settings.get("prompt_graph_mode") == "per_start" and starting_id:
+        result = read_start_prompt_graph(vault, scenario_id, starting_id)
+        return {
+            "graph": result["graph"],
+            "source": result["source"],
+            "starting_id": starting_id,
+            "own_graph": result["own_graph"],
+        }
+    return {
+        "graph": read_prompt_graph(vault, scenario_id),
+        "source": "scenario",
+        "starting_id": None,
+        "own_graph": True,
     }
 
 
@@ -166,9 +210,11 @@ def _compose_messages_from_graph(
     user_message: str,
     active_mods: list[str],
     pinned_characters: list[str],
+    allowed_memory_session_ids: set[str] | None = None,
+    current_turn: int | None = None,
 ) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
-    messages: list[dict[str, str]] = []
     system_sections: list[str] = []
+    conversation_messages: list[dict[str, str]] = []
     expansions: list[dict[str, Any]] = []
 
     for node in graph["nodes"]:
@@ -184,6 +230,8 @@ def _compose_messages_from_graph(
             user_message=user_message,
             active_mods=active_mods,
             pinned_characters=pinned_characters,
+            allowed_memory_session_ids=allowed_memory_session_ids,
+            current_turn=current_turn,
         )
         expansions.append(expansion)
         if not expansion["included"]:
@@ -199,12 +247,14 @@ def _compose_messages_from_graph(
                 item_role = item.get("role")
                 item_content = item.get("content")
                 if is_conversation_role(item_role) and isinstance(item_content, str) and item_content:
-                    messages.append({"role": item_role, "content": item_content})
+                    conversation_messages.append({"role": item_role, "content": item_content})
         elif role in {"user", "assistant"} and content:
-            messages.append({"role": role, "content": content})
+            conversation_messages.append({"role": role, "content": content})
 
+    messages: list[dict[str, str]] = []
     if system_sections:
-        messages.insert(0, {"role": "system", "content": "\n\n".join(system_sections)})
+        messages.append({"role": "system", "content": "\n\n".join(system_sections)})
+    messages.extend(conversation_messages)
 
     return messages, expansions
 
@@ -334,6 +384,8 @@ def _expand_node(
     user_message: str,
     active_mods: list[str] | None = None,
     pinned_characters: list[str] | None = None,
+    allowed_memory_session_ids: set[str] | None = None,
+    current_turn: int | None = None,
 ) -> dict[str, Any]:
     node_id = node["id"]
     node_type = node["type"]
@@ -392,7 +444,19 @@ def _expand_node(
         query = build_rag_query(user_message=user_message, recent_log=recent_log, state=state)
         sources = _node_sources(node)
         limit = _node_limit(node)
+        limits = _node_limits(node)
         token_budget = _node_token_budget(node)
+        session_memory: list[dict[str, Any]] = []
+        if "memory" in sources and allowed_memory_session_ids:
+            session_memory = session_memory_results(
+                vault,
+                scenario.id,
+                allowed_session_ids=allowed_memory_session_ids,
+                exclude_paths=exclude_paths if exclude_paths else None,
+            )
+        session_memory_paths = {
+            result["source_path"] for result in session_memory if isinstance(result.get("source_path"), str)
+        }
         keyword_results: list[dict[str, Any]] = []
         keyword_warnings: list[str] = []
         if "lore" in sources:
@@ -404,13 +468,18 @@ def _expand_node(
                 exclude_paths=exclude_paths if exclude_paths else None,
             )
         keyword_paths = {result["source_path"] for result in keyword_results if isinstance(result.get("source_path"), str)}
+        retrieval_exclude_paths = exclude_paths | keyword_paths | session_memory_paths
         results = retrieve_context(
             vault,
             scenario_id=scenario.id,
             query=query,
             limit=limit,
             sources=sources,
-            exclude_paths=(exclude_paths | keyword_paths) if exclude_paths or keyword_paths else None,
+            exclude_paths=retrieval_exclude_paths if retrieval_exclude_paths else None,
+            character_match_mode=_character_rag_match_mode(scenario.metadata),
+            limits=limits,
+            allowed_session_ids=allowed_memory_session_ids,
+            current_turn=current_turn,
         )
         keyword_budgeted_results = budget_rag_results(
             keyword_results,
@@ -418,19 +487,20 @@ def _expand_node(
             token_budgets={"lore": _node_keyword_token_budget(node)},
         )
         budgeted_results = budget_rag_results(
-            results,
+            session_memory + results,
             token_budget=token_budget,
             token_budgets=_node_token_budgets(node),
         )
         combined_results = keyword_budgeted_results + budgeted_results
         content = format_rag_results(combined_results)
         if not content:
-            reason = "rag_budget_exhausted" if results else "no_rag_results"
+            reason = "rag_budget_exhausted" if results or session_memory else "no_rag_results"
             return {
                 **base,
                 "included": False,
                 "skipped_reason": reason,
                 "results": [],
+                "session_memory_results": [],
                 "keyword_results": [],
                 "keyword_warnings": keyword_warnings,
                 "query": query,
@@ -440,6 +510,8 @@ def _expand_node(
                 "included_count": 0,
                 "token_budget": token_budget,
                 "keyword_token_budget": _node_keyword_token_budget(node),
+                "token_budgets": _node_effective_token_budgets(node),
+                **({"limits": limits} if limits else {}),
             }
         return {
             **base,
@@ -448,6 +520,7 @@ def _expand_node(
                 "prompt_tokens"
             ],
             "results": combined_results,
+            "session_memory_results": session_memory,
             "keyword_results": keyword_budgeted_results,
             "keyword_warnings": keyword_warnings,
             "query": query,
@@ -457,6 +530,8 @@ def _expand_node(
             "included_count": len(combined_results),
             "token_budget": token_budget,
             "keyword_token_budget": _node_keyword_token_budget(node),
+            "token_budgets": _node_effective_token_budgets(node),
+            **({"limits": limits} if limits else {}),
         }
     elif node_type == "session_log":
         messages = [
@@ -566,6 +641,18 @@ def _node_limit(node: dict[str, Any]) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 6
 
 
+def _node_limits(node: dict[str, Any]) -> dict[str, int] | None:
+    """Optional per-type count limits. Returns None when unset/invalid (shared limit applies)."""
+    value = node.get("limits")
+    if not isinstance(value, dict):
+        return None
+    limits: dict[str, int] = {}
+    for key, cap in value.items():
+        if isinstance(key, str) and key.strip() and isinstance(cap, int) and not isinstance(cap, bool) and cap >= 0:
+            limits[key] = cap
+    return limits or None
+
+
 def _node_sources(node: dict[str, Any]) -> list[str]:
     value = node.get("source")
     if not isinstance(value, list):
@@ -573,27 +660,53 @@ def _node_sources(node: dict[str, Any]) -> list[str]:
     return [item for item in value if isinstance(item, str)]
 
 
-def _node_token_budget(node: dict[str, Any]) -> int:
+def _node_budget_enabled(node: dict[str, Any]) -> bool:
+    return node.get("budget_enabled") is not False
+
+
+def _node_token_budget(node: dict[str, Any]) -> int | None:
+    if not _node_budget_enabled(node):
+        return None
     value = node.get("token_budget", DEFAULT_RAG_TOKEN_BUDGET)
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else DEFAULT_RAG_TOKEN_BUDGET
 
 
-def _node_keyword_token_budget(node: dict[str, Any]) -> int:
+def _node_keyword_token_budget(node: dict[str, Any]) -> int | None:
+    if not _node_budget_enabled(node):
+        return None
     value = node.get("keyword_token_budget", DEFAULT_KEYWORD_TRIGGER_TOKEN_BUDGET)
     if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
         return value
     return DEFAULT_KEYWORD_TRIGGER_TOKEN_BUDGET
 
 
-def _node_token_budgets(node: dict[str, Any]) -> dict[str, int]:
+def _node_token_budgets(node: dict[str, Any]) -> dict[str, int | None]:
+    if not _node_budget_enabled(node):
+        return {key: None for key in DEFAULT_RAG_TYPE_TOKEN_BUDGETS}
     value = node.get("token_budgets")
     if not isinstance(value, dict):
         return {}
-    budgets: dict[str, int] = {}
+    budgets: dict[str, int | None] = {}
     for key, budget in value.items():
         if isinstance(key, str) and isinstance(budget, int) and not isinstance(budget, bool) and budget >= 0:
             budgets[key] = budget
     return budgets
+
+
+def _node_effective_token_budgets(node: dict[str, Any]) -> dict[str, int | None]:
+    if not _node_budget_enabled(node):
+        return {key: None for key in DEFAULT_RAG_TYPE_TOKEN_BUDGETS}
+    return {**DEFAULT_RAG_TYPE_TOKEN_BUDGETS, **_node_token_budgets(node)}
+
+
+def _character_rag_match_mode(metadata: dict[str, Any]) -> str:
+    config = metadata.get("character_rag")
+    if isinstance(config, dict):
+        value = config.get("match")
+        if isinstance(value, str) and value.strip().lower() == "fuzzy":
+            return "fuzzy"
+        return "exact"
+    return "exact"
 
 
 def _section(title: str, content: str) -> str:
@@ -659,6 +772,13 @@ def _metadata_string(metadata: dict[str, Any], field: str) -> str:
 def _metadata_text(metadata: dict[str, Any], field: str) -> str:
     value = metadata.get(field)
     return value if isinstance(value, str) else ""
+
+
+def _metadata_turn_count(metadata: dict[str, Any]) -> int | None:
+    value = metadata.get("turn_count")
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
 
 
 def _resolved_session_note(metadata: dict[str, Any], session_note: str | None, legacy_user_note: str = "") -> str:

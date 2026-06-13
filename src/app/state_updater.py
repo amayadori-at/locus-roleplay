@@ -6,7 +6,15 @@ from typing import Any, Protocol
 
 from app.loaders import ModelProfile, load_profile
 from app.model_client import ChatCompletionResult
-from app.state_session import StatePatchError, apply_session_state_patch_for_turn, read_session_state
+from app.state_session import (
+    StatePatchError,
+    deep_merge,
+    parse_patch_output,
+    read_session_state,
+    validate_state_patch,
+    write_session_state,
+    write_session_state_snapshot,
+)
 from app.vault import Vault, VaultFileError
 
 
@@ -78,8 +86,10 @@ def run_state_update(
     gm_response: str,
     model_client: StateUpdateClient,
     recent_context: list[dict[str, Any]] | None = None,
+    current_state_override: dict[str, Any] | None = None,
+    persist: bool = True,
 ) -> StateUpdateResult:
-    current_state = read_session_state(vault, scenario_id, session_id)
+    current_state = current_state_override if current_state_override is not None else read_session_state(vault, scenario_id, session_id)
     profile = load_profile(vault, profile_id)
     policy = _read_optional_state_update_policy(vault, scenario_id)
     messages = compose_state_update_messages(
@@ -96,7 +106,12 @@ def run_state_update(
     )
     completion = model_client.create_chat_completion(profile, messages)
     patch_output = _coerce_patch_output(completion.content, current_state)
-    updated_state = apply_session_state_patch_for_turn(vault, scenario_id, session_id, turn, patch_output)
+    patch = parse_patch_output(patch_output)
+    validate_state_patch(current_state, patch)
+    updated_state = deep_merge(current_state, patch)
+    if persist:
+        write_session_state(vault, scenario_id, session_id, updated_state)
+        write_session_state_snapshot(vault, scenario_id, session_id, turn, updated_state)
     return StateUpdateResult(updated_state=updated_state, messages=messages, raw_patch_output=completion.content)
 
 
