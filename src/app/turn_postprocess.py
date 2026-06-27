@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
@@ -33,9 +34,11 @@ def run_turn_postprocess(
 ) -> dict[str, Any]:
     state_updated = False
     state_update_error: str | None = None
+    timings_ms: dict[str, int] = {}
     sanitized_recent_log = sanitize_log_entries(recent_log)
     summary_profile_id = metadata.get("summary_profile_id")
     if state_model_client is not None and isinstance(summary_profile_id, str) and summary_profile_id.strip():
+        started = time.perf_counter()
         try:
             run_state_update(
                 vault,
@@ -51,6 +54,8 @@ def run_turn_postprocess(
             state_updated = True
         except Exception as exc:
             state_update_error = f"{type(exc).__name__}: {exc}"
+        finally:
+            timings_ms["state_model_ms"] = _duration_ms(started)
 
     memory_updated = False
     memory_update_error: str | None = None
@@ -105,6 +110,7 @@ def run_turn_postprocess(
         "memory_update_error": memory_update_error,
         "memory_files": memory_files,
         "metadata_patch": metadata_patch,
+        "timings_ms": timings_ms,
     }
 
 
@@ -135,3 +141,7 @@ def _error_metadata(turn: int, error: str) -> dict[str, Any]:
         "error": error,
         "updated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
     }
+
+
+def _duration_ms(started: float) -> int:
+    return max(0, round((time.perf_counter() - started) * 1000))

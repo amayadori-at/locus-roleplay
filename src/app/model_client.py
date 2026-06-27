@@ -113,7 +113,7 @@ class OpenAICompatibleClient:
             try:
                 status, response_text = self.transport(endpoint, headers, body, timeout)
                 if status < 200 or status >= 300:
-                    raise ModelHTTPError(f"Model endpoint returned HTTP {status}")
+                    raise ModelHTTPError(_format_http_error(status, response_text, payload.get("model")))
                 return _parse_chat_completion_response(response_text)
             except ModelHTTPError as exc:
                 last_error = exc
@@ -191,6 +191,37 @@ def _retry_count(data: dict[str, Any]) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise ModelClientError("retry_count must be a non-negative integer")
     return value
+
+
+def _format_http_error(status: int, response_text: str, model: object) -> str:
+    message = f"Model endpoint returned HTTP {status}"
+    detail = _extract_error_detail(response_text)
+    if detail:
+        message = f"{message}: {detail}"
+    if isinstance(model, str) and model.strip():
+        message = f"{message} (model: {model})"
+    return message
+
+
+def _extract_error_detail(response_text: str) -> str:
+    try:
+        data = json.loads(response_text)
+    except json.JSONDecodeError:
+        return response_text.strip()[:200]
+    if not isinstance(data, dict):
+        return ""
+    error = data.get("error")
+    if isinstance(error, str):
+        return error
+    if isinstance(error, dict):
+        for key in ("message", "code", "type"):
+            value = error.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    message = data.get("message")
+    if isinstance(message, str) and message.strip():
+        return message.strip()
+    return ""
 
 
 def _chat_completions_url(endpoint: str) -> str:

@@ -171,7 +171,7 @@
                   <span>Turn {message.turn}</span>
                 {/if}
                 {#if message.role === "assistant" && formatResponseDuration(message)}
-                  <span title="LLM response time">{formatResponseDuration(message)}</span>
+                  <span title="RAG / RP / State response time">{formatResponseDuration(message)}</span>
                 {/if}
               </span>
             </header>

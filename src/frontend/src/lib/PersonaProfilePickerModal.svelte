@@ -7,6 +7,7 @@
     getProfile,
     listPersonas,
     listProfiles,
+    testProfile,
     updatePersona,
     updateProfile
   } from "./api.js";
@@ -35,6 +36,10 @@
 
   let defaultRpProfileId = $state(getDefaultRpProfileId());
   let defaultStateProfileId = $state(getDefaultStateProfileId());
+  let profileTestRunning = $state(false);
+  /** @type {Record<string, any> | null} */
+  let profileTestResult = $state(null);
+  let profileTestError = $state("");
 
   // モーダルが開いたとき、使用中のアイテムをデフォルトで詳細表示する
   $effect(() => {
@@ -82,6 +87,8 @@
   /** @param {string} id */
   async function openProfileEdit(id) {
     pickerState.startProfileEdit(id);
+    profileTestResult = null;
+    profileTestError = "";
     try {
       const res = await getProfile(id);
       pickerState.setProfilePatch(profileDataToPatch(res.data || {}));
@@ -122,6 +129,36 @@
     } finally {
       pickerState.setSaving(false);
     }
+  }
+
+  async function runProfileTest() {
+    if (!$pickerState.editId || !$pickerState.profilePatch || profileTestRunning) return;
+    profileTestRunning = true;
+    profileTestResult = null;
+    profileTestError = "";
+    try {
+      profileTestResult = await testProfile($pickerState.editId, profilePatchToPayload($pickerState.profilePatch));
+    } catch (e) {
+      profileTestError = e instanceof Error ? e.message : translateNow("picker.loadError");
+    } finally {
+      profileTestRunning = false;
+    }
+  }
+
+  function profileConfigWarning() {
+    const patch = $pickerState.profilePatch;
+    if (!patch) return "";
+    const contextSize = Number(patch.context_size);
+    const maxTokens = Number(patch.max_tokens);
+    if (!Number.isFinite(contextSize) || contextSize <= 0) {
+      return "Context Size が未設定または不正です。Prompt 使用量の警告が正しく出ません。";
+    }
+    if (Number.isFinite(maxTokens) && maxTokens > 0) {
+      if (maxTokens >= contextSize) return "Max Tokens が Context Size 以上です。応答前に context を使い切る可能性があります。";
+      if (maxTokens > contextSize * 0.5) return "Max Tokens が Context Size の半分を超えています。長いPromptでは超過しやすくなります。";
+    }
+    if (contextSize < 4096) return "Context Size がかなり小さいため、長いセッションでは履歴やRAGが入りにくくなります。";
+    return "";
   }
 
   async function submitNewPersona() {
@@ -318,6 +355,9 @@
                 onclick={() => setAsDefaultProfile($pickerState.editId)}
               >★</button>
             </div>
+            {#if profileConfigWarning()}
+              <p class="picker-error">{profileConfigWarning()}</p>
+            {/if}
             <div class="profile-edit-form">
               <label>
                 <span>Model</span>
@@ -427,6 +467,30 @@
             </div>
           {/if}
           {#if $pickerState.editId && $pickerState.profilePatch}
+            <div class="profile-test-panel">
+              <button type="button" disabled={profileTestRunning} onclick={() => void runProfileTest()}>
+                {profileTestRunning ? "疎通確認中" : "疎通確認"}
+              </button>
+              {#if $pickerState.dirty}
+                <span class="picker-hint">未保存変更を含めて疎通確認します。</span>
+              {/if}
+              {#if profileTestResult}
+                <dl class="info-list compact-list">
+                  <div><dt>Result</dt><dd>OK</dd></div>
+                  <div><dt>Model</dt><dd>{profileTestResult.model || "—"}</dd></div>
+                  <div><dt>Elapsed</dt><dd>{profileTestResult.elapsed_ms ?? "—"} ms</dd></div>
+                  {#if profileTestResult.finish_reason}
+                    <div><dt>Finish</dt><dd>{profileTestResult.finish_reason}</dd></div>
+                  {/if}
+                  {#if profileTestResult.usage}
+                    <div><dt>Usage</dt><dd>{JSON.stringify(profileTestResult.usage)}</dd></div>
+                  {/if}
+                </dl>
+              {/if}
+              {#if profileTestError}
+                <span class="picker-error">{profileTestError}</span>
+              {/if}
+            </div>
             <div class="picker-actions">
               {#if $pickerState.kind === "roleplay"}
                 <button type="button" class="use-button" onclick={() => chooseRpProfile($pickerState.editId)}>{$t("picker.useProfile")}</button>

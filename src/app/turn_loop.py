@@ -14,6 +14,7 @@ from app.state_session import (
     append_session_log,
     read_session_log,
     read_session_metadata,
+    update_session_log_entry,
     write_latest_session_prompt,
     write_session_metadata,
 )
@@ -55,6 +56,7 @@ class TurnResult:
     memory_update_error: str | None = None
     memory_files: list[str] | None = None
     response_duration_ms: int | None = None
+    timings_ms: dict[str, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -66,6 +68,7 @@ class TurnPreparation:
     prompt: dict[str, Any]
     messages: list[dict[str, str]]
     turn: int
+    timings_ms: dict[str, int]
 
 
 def run_gm_turn(
@@ -82,6 +85,7 @@ def run_gm_turn(
     started = time.perf_counter()
     result = model_client.create_chat_completion(prepared.profile, prepared.messages)
     response_duration_ms = _duration_ms(started)
+    timings_ms = _turn_timings(prepared, rp_model_ms=response_duration_ms)
     return finalize_gm_turn(
         vault,
         scenario_id=scenario_id,
@@ -91,6 +95,7 @@ def run_gm_turn(
         prepared=prepared,
         state_model_client=state_model_client,
         response_duration_ms=response_duration_ms,
+        timings_ms=timings_ms,
     )
 
 
@@ -114,6 +119,7 @@ def run_gm_turn_stream(
         chunks.append(chunk)
         on_delta(chunk)
     response_duration_ms = _duration_ms(started)
+    timings_ms = _turn_timings(prepared, rp_model_ms=response_duration_ms)
     return finalize_gm_turn(
         vault,
         scenario_id=scenario_id,
@@ -123,6 +129,7 @@ def run_gm_turn_stream(
         prepared=prepared,
         state_model_client=state_model_client,
         response_duration_ms=response_duration_ms,
+        timings_ms=timings_ms,
     )
 
 
@@ -160,6 +167,7 @@ def prepare_gm_turn(
         recent_log_override=raw_recent_log,
         state_override=state_override,
     )
+    timings_ms = _prompt_timings(prompt)
     recent_log = prompt.get("selected_recent_log")
     if not isinstance(recent_log, list):
         recent_log = raw_recent_log[-recent_limit:] if recent_limit else raw_recent_log
@@ -171,6 +179,7 @@ def prepare_gm_turn(
         prompt=prompt,
         messages=prompt["messages"],
         turn=turn,
+        timings_ms=timings_ms,
     )
 
 
@@ -184,6 +193,7 @@ def finalize_gm_turn(
     prepared: TurnPreparation,
     state_model_client: ChatCompletionClient | None = None,
     response_duration_ms: int | None = None,
+    timings_ms: dict[str, int] | None = None,
 ) -> TurnResult:
     write_latest_session_prompt(
         vault,
@@ -204,7 +214,11 @@ def finalize_gm_turn(
     postprocess_content = _strip_reasoning_blocks(assistant_content)
 
     append_session_log(vault, scenario_id, session_id, turn=prepared.turn, role="user", content=user_message)
-    assistant_extra = {"response_duration_ms": response_duration_ms} if response_duration_ms is not None else None
+    assistant_timings = _turn_timings(prepared, rp_model_ms=response_duration_ms, timings_ms=timings_ms)
+    assistant_extra = _assistant_timing_extra(
+        response_duration_ms=response_duration_ms,
+        timings_ms=assistant_timings,
+    )
     append_session_log(
         vault,
         scenario_id,
@@ -227,6 +241,8 @@ def finalize_gm_turn(
         assistant_content=postprocess_content,
         state_model_client=state_model_client,
     )
+    result_timings = _merge_timings(assistant_timings, postprocess.get("timings_ms"))
+    _merge_assistant_timings(vault, scenario_id, session_id, prepared.turn, result_timings)
 
     updated_metadata = read_session_metadata(vault, scenario_id, session_id)
     updated_metadata["turn_count"] = prepared.turn
@@ -246,6 +262,7 @@ def finalize_gm_turn(
         memory_update_error=postprocess["memory_update_error"],
         memory_files=postprocess["memory_files"],
         response_duration_ms=response_duration_ms,
+        timings_ms=result_timings,
     )
 
 
@@ -258,6 +275,7 @@ def finalize_gm_turn_fast(
     assistant_content: str,
     prepared: TurnPreparation,
     response_duration_ms: int | None = None,
+    timings_ms: dict[str, int] | None = None,
 ) -> TurnResult:
     """Fast IO-only finalization: log, segments, metadata. No LLM calls."""
     write_latest_session_prompt(
@@ -278,7 +296,11 @@ def finalize_gm_turn_fast(
     segments = parse_image_markers(assistant_content, scenario=prepared.scenario, vault=vault)
     log_content = _strip_reasoning_blocks(assistant_content)
     append_session_log(vault, scenario_id, session_id, turn=prepared.turn, role="user", content=user_message)
-    assistant_extra = {"response_duration_ms": response_duration_ms} if response_duration_ms is not None else None
+    assistant_timings = _turn_timings(prepared, rp_model_ms=response_duration_ms, timings_ms=timings_ms)
+    assistant_extra = _assistant_timing_extra(
+        response_duration_ms=response_duration_ms,
+        timings_ms=assistant_timings,
+    )
     append_session_log(
         vault,
         scenario_id,
@@ -305,6 +327,7 @@ def finalize_gm_turn_fast(
         memory_update_error=None,
         memory_files=[],
         response_duration_ms=response_duration_ms,
+        timings_ms=assistant_timings,
     )
 
 
@@ -320,7 +343,7 @@ def run_gm_post_turn(
 ) -> dict[str, Any]:
     """Slow post-processing: state update and memory summary (LLM calls)."""
     postprocess_content = _strip_reasoning_blocks(assistant_content)
-    return run_turn_postprocess(
+    postprocess = run_turn_postprocess(
         vault,
         scenario_id=scenario_id,
         session_id=session_id,
@@ -332,6 +355,8 @@ def run_gm_post_turn(
         assistant_content=postprocess_content,
         state_model_client=state_model_client,
     )
+    _merge_assistant_timings(vault, scenario_id, session_id, prepared.turn, postprocess.get("timings_ms"))
+    return postprocess
 
 
 def _require_metadata_string(metadata: dict[str, Any], field: str) -> str:
@@ -393,6 +418,7 @@ def _prompt_rag_debug(prompt: dict[str, Any]) -> list[dict[str, Any]]:
                 "token_budget": expansion.get("token_budget"),
                 "keyword_token_budget": expansion.get("keyword_token_budget"),
                 "token_budgets": expansion.get("token_budgets") if isinstance(expansion.get("token_budgets"), dict) else {},
+                "duration_ms": expansion.get("duration_ms") if isinstance(expansion.get("duration_ms"), int) else None,
             }
         )
     return debug
@@ -401,6 +427,19 @@ def _prompt_rag_debug(prompt: dict[str, Any]) -> list[dict[str, Any]]:
 def _prompt_recent_log_selection(prompt: dict[str, Any]) -> dict[str, Any]:
     value = prompt.get("recent_log_selection")
     return value if isinstance(value, dict) else {}
+
+
+def _prompt_timings(prompt: dict[str, Any]) -> dict[str, int]:
+    rag_duration_ms = 0
+    has_rag_duration = False
+    for expansion in prompt.get("expansions", []):
+        if not isinstance(expansion, dict) or expansion.get("type") != "rag":
+            continue
+        duration = expansion.get("duration_ms")
+        if isinstance(duration, int) and not isinstance(duration, bool) and duration >= 0:
+            rag_duration_ms += duration
+            has_rag_duration = True
+    return {"rag_search_ms": rag_duration_ms} if has_rag_duration else {}
 
 
 def _next_turn(metadata: dict[str, Any]) -> int:
@@ -416,3 +455,69 @@ def _now_iso() -> str:
 
 def _duration_ms(started: float) -> int:
     return max(0, round((time.perf_counter() - started) * 1000))
+
+
+def _turn_timings(
+    prepared: TurnPreparation,
+    *,
+    rp_model_ms: int | None = None,
+    timings_ms: dict[str, int] | None = None,
+) -> dict[str, int]:
+    timings = _merge_timings(prepared.timings_ms, timings_ms)
+    if rp_model_ms is not None:
+        timings["rp_model_ms"] = rp_model_ms
+    return timings
+
+
+def _assistant_timing_extra(
+    *,
+    response_duration_ms: int | None,
+    timings_ms: dict[str, int] | None,
+) -> dict[str, Any] | None:
+    extra: dict[str, Any] = {}
+    if response_duration_ms is not None:
+        extra["response_duration_ms"] = response_duration_ms
+    normalized = _normalize_timings(timings_ms)
+    if normalized:
+        extra["timings_ms"] = normalized
+    return extra or None
+
+
+def _merge_assistant_timings(
+    vault: Vault,
+    scenario_id: str,
+    session_id: str,
+    turn: int,
+    timings_ms: Any,
+) -> None:
+    timings = _normalize_timings(timings_ms)
+    if not timings:
+        return
+    existing: dict[str, int] = {}
+    for entry in read_session_log(vault, scenario_id, session_id):
+        if entry.get("turn") == turn and entry.get("role") == "assistant":
+            existing = _normalize_timings(entry.get("timings_ms"))
+            break
+    merged = _merge_timings(existing, timings)
+    if merged:
+        update_session_log_entry(vault, scenario_id, session_id, turn, "assistant", {"timings_ms": merged})
+
+
+def _merge_timings(*items: Any) -> dict[str, int]:
+    merged: dict[str, int] = {}
+    for item in items:
+        merged.update(_normalize_timings(item))
+    return merged
+
+
+def _normalize_timings(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    timings: dict[str, int] = {}
+    for key, raw in value.items():
+        if not isinstance(key, str):
+            continue
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+            continue
+        timings[key] = raw
+    return timings

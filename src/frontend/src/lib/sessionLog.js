@@ -67,7 +67,7 @@ export function appendStreamingDeltaToMessages(messages, delta) {
  * @param {string} userMessage
  * @param {Record<string, any>} turn
  * @param {boolean} usedStream
- * @returns {Array<T | { role: string, content: string, segments?: Array<Record<string, any>>, turn: number, response_duration_ms?: number }>}
+ * @returns {Array<T | { role: string, content: string, segments?: Array<Record<string, any>>, turn: number, response_duration_ms?: number, timings_ms?: Record<string, number> }>}
  */
 export function finalizeTurnMessages(messages, userMessage, turn, usedStream) {
   const pendingCount = usedStream ? 2 : 1;
@@ -79,7 +79,8 @@ export function finalizeTurnMessages(messages, userMessage, turn, usedStream) {
       content: turn.assistant_content || "",
       segments: turn.segments || [],
       turn: turn.turn,
-      response_duration_ms: turn.response_duration_ms
+      response_duration_ms: turn.response_duration_ms,
+      timings_ms: turn.timings_ms
     }
   ];
 }
@@ -114,6 +115,7 @@ export function updateRegeneratingAssistantMessage(messages, turn, content) {
     const updated = { ...message, content, streaming: true };
     delete updated.segments;
     delete updated.response_duration_ms;
+    delete updated.timings_ms;
     return updated;
   });
 }
@@ -159,12 +161,41 @@ export function updateStreamingContinuedAssistantMessage(messages, sourceTurn, c
  * @returns {string}
  */
 export function formatResponseDuration(message) {
+  const timings = responseTimings(message);
+  const parts = [];
+  if (Number.isFinite(timings.rag_search_ms)) parts.push(`RAG ${formatDurationMs(timings.rag_search_ms)}`);
+  if (Number.isFinite(timings.rp_model_ms)) parts.push(`RP ${formatDurationMs(timings.rp_model_ms)}`);
+  if (Number.isFinite(timings.state_model_ms)) parts.push(`State ${formatDurationMs(timings.state_model_ms)}`);
+  if (parts.length) return parts.join(" / ");
   const value = message?.response_duration_ms;
   if (!Number.isFinite(value) || value < 0) return "";
+  return `LLM ${formatDurationMs(value)}`;
+}
+
+/**
+ * @param {Record<string, any>} message
+ * @returns {Record<string, number>}
+ */
+function responseTimings(message) {
+  const raw = message?.timings_ms;
+  if (!raw || typeof raw !== "object") return {};
+  /** @type {Record<string, number>} */
+  const timings = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) timings[key] = value;
+  }
+  return timings;
+}
+
+/**
+ * @param {number} value
+ * @returns {string}
+ */
+function formatDurationMs(value) {
   const milliseconds = Math.round(value);
-  if (milliseconds < 1000) return `LLM ${milliseconds}ms`;
+  if (milliseconds < 1000) return `${milliseconds}ms`;
   const seconds = milliseconds / 1000;
-  return `LLM ${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)}s`;
+  return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)}s`;
 }
 
 /**

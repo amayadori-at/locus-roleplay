@@ -61,6 +61,48 @@ export function groupedRagSources(results) {
 }
 
 /**
+ * @param {RagSource} result
+ * @param {number} index
+ */
+export function ragSourceKey(result, index) {
+  const base = result?.chunk_id || result?.source_path || result?.title || result?.type || "rag";
+  return `${String(base)}:${index}`;
+}
+
+/**
+ * @param {RagSource} result
+ */
+export function ragSourceContent(result) {
+  const content = result?.content;
+  return typeof content === "string" ? content : "";
+}
+
+/**
+ * @param {RagSource} result
+ */
+export function ragSourceContentLength(result) {
+  return ragSourceContent(result).length;
+}
+
+/**
+ * @param {RagSource} result
+ * @param {number} [maxLength]
+ */
+export function ragSourceContentPreview(result, maxLength = 320) {
+  const content = ragSourceContent(result).trim();
+  if (!content || content.length <= maxLength) return content;
+  return `${content.slice(0, maxLength).trimEnd()}...`;
+}
+
+/**
+ * @param {RagSource} result
+ * @param {number} [maxLength]
+ */
+export function isRagSourceContentTruncated(result, maxLength = 320) {
+  return ragSourceContent(result).trim().length > maxLength;
+}
+
+/**
  * @param {unknown} value
  */
 export function formatHeadingPath(value) {

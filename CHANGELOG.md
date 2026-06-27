@@ -1,5 +1,31 @@
 # CHANGELOG
 
+## v1.2.6 (2026-06-27)
+
+### 新機能
+
+- Session 設定で、直近の GM 応答に使われた Memory / Lore / Character を種類別に確認しやすくした
+- RAG index の再構築が必要な状態を Session / Scenario Editor で見つけやすくし、UI から再構築できる導線を改善
+- Memory Review に一括操作を追加 — 複数 Memory の RAG 対象切り替え、status 更新、削除をまとめて実行可能
+- Profile の疎通確認を追加 — profile ごとにモデル接続と応答時間を UI から確認可能
+- Scenario Editor の Vault Tree から、character / lore / gm / starting を作成しやすくした
+- Source Editor に frontmatter 補助と `<locus-rag>` タグ挿入 UI を追加 — Lore の必要範囲を RAG chunk として指定しやすくなった
+
+### 既存機能の改善
+
+- Memory Review のフィルタをシナリオ別に保存し、開き直しても前回の絞り込みを復元
+- 古い Memory の棚卸し向けに、stale / resolved / archived や last_seen_turn を見つけやすくした
+- context size / max tokens の警告を Profile 編集と Session の Token Usage で分かりやすくした
+- Source Editor の新規ファイルテンプレートを拡充し、Obsidian で読みやすい Markdown を初期生成するよう改善
+
+### 互換性メモ
+
+- 既存セッションログ・State・Prompt Graph・Memory Markdown・シナリオデータは引き続き読み込み可能
+- Profile 疎通確認は API key や endpoint の値そのものを frontend へ返さない
+- Source Editor の補助 UI は自動保存せず、既存の Markdown 保存操作でのみ Vault に反映される
+
+---
+
 ## v1.2.5 (2026-06-13)
 
 ### 新機能

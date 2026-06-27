@@ -250,6 +250,13 @@ body {
   gap: 2px;
 }
 
+.source-group-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px;
+}
+
 .source-group-toggle {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -263,6 +270,12 @@ body {
   background: transparent;
   color: var(--c-text);
   text-align: left;
+}
+
+.source-group-add {
+  width: 30px;
+  height: 30px;
+  align-self: center;
 }
 
 .source-group-toggle:hover:not(:disabled) {
@@ -929,6 +942,35 @@ button:hover {
 
 .source-editor-wrapper {
   position: relative;
+}
+
+.source-assist-panel {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.source-assist-panel fieldset {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.source-assist-panel legend {
+  padding: 0 4px;
+  color: var(--c-text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.source-assist-panel input {
+  flex: 1 1 130px;
 }
 
 .source-editor-expand {

@@ -125,6 +125,7 @@ def _turn_response(
         started = time.perf_counter()
         completion = client.create_chat_completion(prepared.profile, prepared.messages)
         response_duration_ms = _duration_ms(started)
+        timings_ms = _response_timings(prepared, response_duration_ms)
         result = finalize_gm_turn_fast(
             vault,
             scenario_id=scenario_id,
@@ -133,6 +134,7 @@ def _turn_response(
             assistant_content=completion.content,
             prepared=prepared,
             response_duration_ms=response_duration_ms,
+            timings_ms=timings_ms,
         )
         postprocess_job = start_postprocess_job(
             vault,
@@ -231,6 +233,7 @@ def _turn_stream_response(
                 yield _sse_event("delta", {"delta": delta})
             assistant_content = "".join(chunks)
             response_duration_ms = _duration_ms(started)
+            timings_ms = _response_timings(prepared, response_duration_ms)
             result = finalize_gm_turn_fast(
                 vault,
                 scenario_id=scenario_id,
@@ -239,6 +242,7 @@ def _turn_stream_response(
                 assistant_content=assistant_content,
                 prepared=prepared,
                 response_duration_ms=response_duration_ms,
+                timings_ms=timings_ms,
             )
             yield _sse_event("final", {"turn": turn_result_payload(result)})
             postprocess_job = start_postprocess_job(
@@ -407,6 +411,7 @@ def _regenerate_session_message_response(
     _write_regenerate_latest_prompt(vault, scenario_id, session_id, turn, prepared, target.state_source)
 
     def _on_success(content: str, token_usage: dict[str, int], response_duration_ms: int) -> bytes:
+        timings_ms = _response_timings(prepared, response_duration_ms)
         updated, state_info, state_restored = _append_regenerated_candidate(
             vault,
             scenario_id=scenario_id,
@@ -421,6 +426,7 @@ def _regenerate_session_message_response(
             assistant_content=content,
             state_model_client=state_client,
             response_duration_ms=response_duration_ms,
+            timings_ms=timings_ms,
         )
 
         return json.dumps(
@@ -432,6 +438,7 @@ def _regenerate_session_message_response(
                 "entry": updated,
                 "token_usage": token_usage,
                 "response_duration_ms": response_duration_ms,
+                "timings_ms": updated.get("timings_ms"),
                 "state_source": target.state_source,
                 "state_candidate": state_info,
                 "state_restored": state_restored,
@@ -560,6 +567,7 @@ def _append_regenerated_candidate(
     assistant_content: str,
     state_model_client: ChatCompletionClient | None,
     response_duration_ms: int,
+    timings_ms: dict[str, int],
 ) -> tuple[dict[str, Any], dict[str, Any], bool]:
     assistant_content = _strip_reasoning_blocks(assistant_content)
     raw_candidates = target_entry.get("candidates", [])
@@ -595,6 +603,9 @@ def _append_regenerated_candidate(
         assistant_content=assistant_content,
         state_model_client=state_model_client,
     )
+    state_timings = state_info.get("timings_ms")
+    if isinstance(state_timings, dict):
+        timings_ms = _merge_timings(timings_ms, state_timings)
     candidate_states.append(state_info)
     state_restored = _restore_candidate_state_if_latest(
         vault,
@@ -618,6 +629,7 @@ def _append_regenerated_candidate(
             "candidate_states": candidate_states,
             "candidate_response_durations_ms": candidate_durations,
             "response_duration_ms": response_duration_ms,
+            "timings_ms": timings_ms,
         },
     )
     return updated, state_info, state_restored
@@ -682,6 +694,7 @@ def _state_info_for_regenerated_candidate(
     summary_profile_id = metadata.get("summary_profile_id")
     if state_model_client is None or not isinstance(summary_profile_id, str) or not summary_profile_id.strip():
         return {"state_updated": False, "state_update_error": None}
+    started = time.perf_counter()
     try:
         result = run_state_update(
             vault,
@@ -697,9 +710,18 @@ def _state_info_for_regenerated_candidate(
             persist=False,
         )
         path = write_session_candidate_state(vault, scenario_id, session_id, turn, candidate_index, result.updated_state)
-        return {"state_updated": True, "state_path": path, "state_update_error": None}
+        return {
+            "state_updated": True,
+            "state_path": path,
+            "state_update_error": None,
+            "timings_ms": {"state_model_ms": _duration_ms(started)},
+        }
     except Exception as exc:
-        return {"state_updated": False, "state_update_error": f"{type(exc).__name__}: {exc}"}
+        return {
+            "state_updated": False,
+            "state_update_error": f"{type(exc).__name__}: {exc}",
+            "timings_ms": {"state_model_ms": _duration_ms(started)},
+        }
 
 
 def _restore_candidate_state_if_latest(
@@ -781,6 +803,7 @@ def _continue_session_message_response(
 
     def _on_success(appended_content: str, token_usage: dict[str, int], response_duration_ms: int) -> bytes:
         clean_appended_content = _remove_reasoning_blocks(appended_content)
+        timings_ms = _response_timings(prepared, response_duration_ms)
         metadata = read_session_metadata(vault, scenario_id, session_id)
         current_turn_count = metadata.get("turn_count", 0)
         if not isinstance(current_turn_count, int) or current_turn_count < 0:
@@ -796,6 +819,7 @@ def _continue_session_message_response(
             extra={
                 "continued_from_turn": turn,
                 "response_duration_ms": response_duration_ms,
+                "timings_ms": timings_ms,
                 "segments": [
                     segment_payload(segment)
                     for segment in parse_image_markers(clean_appended_content, scenario=prepared.scenario, vault=vault)
@@ -817,6 +841,7 @@ def _continue_session_message_response(
                 "entry": entry,
                 "token_usage": token_usage,
                 "response_duration_ms": response_duration_ms,
+                "timings_ms": timings_ms,
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -847,3 +872,24 @@ def _continue_session_message_response(
         content_type="application/json; charset=utf-8",
         body=_on_success(result.content, getattr(result, "token_usage", {}), response_duration_ms),
     )
+
+
+def _response_timings(prepared: Any, response_duration_ms: int) -> dict[str, int]:
+    return _merge_timings(
+        getattr(prepared, "timings_ms", None),
+        {"rp_model_ms": response_duration_ms},
+    )
+
+
+def _merge_timings(*items: Any) -> dict[str, int]:
+    merged: dict[str, int] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        for key, value in item.items():
+            if not isinstance(key, str):
+                continue
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                continue
+            merged[key] = value
+    return merged

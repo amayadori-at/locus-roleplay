@@ -2,7 +2,16 @@
   import { RefreshCcw } from "lucide-svelte";
   import { renderMarkdown } from "./markdown.js";
   import { t, translateNow } from "./i18n.js";
-  import { formatHeadingPath, formatMatchedTerms, groupedRagSources } from "./ragSources.js";
+  import {
+    formatHeadingPath,
+    formatMatchedTerms,
+    groupedRagSources,
+    isRagSourceContentTruncated,
+    ragSourceContent,
+    ragSourceContentLength,
+    ragSourceContentPreview,
+    ragSourceKey
+  } from "./ragSources.js";
 
   /** @type {{
    *   scenarioId?: string,
@@ -74,6 +83,11 @@
   } = $props();
 
   const memoryStatusOptions = ["active", "resolved", "superseded", "stale", "archived"];
+  const ragPreviewLength = 320;
+  /** @type {Record<string, boolean>} */
+  let expandedRagGroups = $state({});
+  /** @type {Record<string, boolean>} */
+  let expandedRagItems = $state({});
   const currentMemoryItem = $derived(resolveMemoryItem(memoryList, activeMemoryPath) || selectedMemoryItem);
 
   function requestPayloadJson() {
@@ -106,6 +120,13 @@
   function tokenUsageWarning() {
     const usage = tokenUsage();
     if (!usage || typeof usage.total_context_ratio !== "number") return "";
+    const maxTokens = Number(promptPreview?.prompt?.profile?.max_tokens ?? usage.reserved_response_tokens);
+    if (!Number.isFinite(usage.context_size) || usage.context_size <= 0) {
+      return "Context size が未設定または不正です。Profile 設定を確認してください。";
+    }
+    if (Number.isFinite(maxTokens) && maxTokens > 0 && usage.remaining_context_tokens < maxTokens) {
+      return `Context 残量 ${formatNumber(usage.remaining_context_tokens)} tokens が max_tokens ${formatNumber(maxTokens)} を下回っています。`;
+    }
     if (usage.total_context_ratio >= 1) {
       return translateNow("settings.contextOverflow");
     }
@@ -126,6 +147,31 @@
 
   function ragSourceGroups() {
     return groupedRagSources(promptPreview?.prompt?.rag_results);
+  }
+
+  function ragSourceTotal() {
+    return ragSourceGroups().reduce((total, group) => total + group.items.length, 0);
+  }
+
+  /** @param {string} type */
+  function isRagGroupExpanded(type) {
+    if (expandedRagGroups[type] !== undefined) return expandedRagGroups[type];
+    return type === "memory";
+  }
+
+  /** @param {string} type */
+  function toggleRagGroup(type) {
+    expandedRagGroups = { ...expandedRagGroups, [type]: !isRagGroupExpanded(type) };
+  }
+
+  /** @param {boolean} expanded */
+  function setAllRagGroups(expanded) {
+    expandedRagGroups = Object.fromEntries(ragSourceGroups().map((group) => [group.type, expanded]));
+  }
+
+  /** @param {string} key */
+  function toggleRagItem(key) {
+    expandedRagItems = { ...expandedRagItems, [key]: expandedRagItems[key] !== true };
   }
 
   /** @param {Record<string, any>} budgets */
@@ -388,6 +434,15 @@
     {:else if promptPreviewError}
       <p class="placeholder-copy error-copy">{promptPreviewError}</p>
     {:else if promptPreview?.prompt?.rag_results?.length}
+      <div class="rag-current-summary">
+        <strong>今回参照された Memory / Lore</strong>
+        <span>{ragSourceTotal()} sources</span>
+        <div class="rag-current-chips">
+          {#each ragSourceGroups() as group}
+            <span>{group.label}: {group.items.length}</span>
+          {/each}
+        </div>
+      </div>
       {#if ragDebug().length}
         <dl class="info-list compact-list">
           {#each ragDebug() as debug}
@@ -405,39 +460,77 @@
         </dl>
       {/if}
       <div class="rag-source-groups">
+        <div class="rag-context-actions">
+          <button type="button" onclick={() => setAllRagGroups(true)}>{$t("settings.ragExpandAll")}</button>
+          <button type="button" onclick={() => setAllRagGroups(false)}>{$t("settings.ragCollapseAll")}</button>
+        </div>
         {#each ragSourceGroups() as group}
           <section class="rag-source-group" aria-label={group.label}>
-            <h5>{group.label} ({group.items.length})</h5>
-            <div class="rag-result-list">
-              {#each group.items as result}
-                <article class="rag-result-card">
-                  <div class="rag-result-head">
-                    <strong>{result.title || result.source_path}</strong>
-                    <span>{result.type || "rag"} / score {result.score ?? $t("common.unrecorded")}</span>
-                  </div>
-                  <button
-                    class="source-link-button"
-                    type="button"
-                    disabled={!result.source_path}
-                    onclick={() => openRagSource(result.source_path)}
-                  >
-                    {result.source_path}
-                  </button>
-                  <dl class="info-list compact-list rag-source-meta">
-                    {#if result.chunk_id}
-                      <div><dt>Chunk</dt><dd>{result.chunk_id}</dd></div>
+            <button
+              class="rag-source-group-toggle"
+              type="button"
+              aria-expanded={isRagGroupExpanded(group.type)}
+              onclick={() => toggleRagGroup(group.type)}
+            >
+              <span>{isRagGroupExpanded(group.type) ? "▾" : "▸"} {group.label}</span>
+              <small>{group.items.length} sources</small>
+            </button>
+            {#if isRagGroupExpanded(group.type)}
+              <div class="rag-result-list">
+                {#each group.items as result, index}
+                  {@const itemKey = ragSourceKey(result, index)}
+                  {@const contentLength = ragSourceContentLength(result)}
+                  {@const expanded = expandedRagItems[itemKey] === true}
+                  <article class="rag-result-card">
+                    <div class="rag-result-head">
+                      <strong>{result.title || result.source_path}</strong>
+                      <span>{result.type || "rag"} / score {result.score ?? $t("common.unrecorded")} / {formatNumber(contentLength)} chars</span>
+                    </div>
+                    <button
+                      class="source-link-button"
+                      type="button"
+                      disabled={!result.source_path}
+                      onclick={() => openRagSource(result.source_path)}
+                    >
+                      {result.source_path}
+                    </button>
+                    <dl class="info-list compact-list rag-source-meta">
+                      {#if result.chunk_id}
+                        <div><dt>Chunk</dt><dd>{result.chunk_id}</dd></div>
+                      {/if}
+                      {#if formatHeadingPath(result.heading_path)}
+                        <div><dt>Heading</dt><dd>{formatHeadingPath(result.heading_path)}</dd></div>
+                      {/if}
+                      {#if formatMatchedTerms(result.matched_terms)}
+                        <div><dt>Matched</dt><dd>{formatMatchedTerms(result.matched_terms)}</dd></div>
+                      {/if}
+                      {#if result.metadata?.status}
+                        <div><dt>Status</dt><dd>{result.metadata.status}</dd></div>
+                      {/if}
+                      {#if result.metadata?.importance !== undefined && result.metadata?.importance !== null}
+                        <div><dt>Importance</dt><dd>{result.metadata.importance}</dd></div>
+                      {/if}
+                      {#if result.metadata?.turn_range}
+                        <div><dt>Turn range</dt><dd>{Array.isArray(result.metadata.turn_range) ? result.metadata.turn_range.join(" - ") : result.metadata.turn_range}</dd></div>
+                      {/if}
+                      {#if result.metadata?.session_id}
+                        <div><dt>Session</dt><dd>{result.metadata.session_id}</dd></div>
+                      {/if}
+                    </dl>
+                    {#if contentLength}
+                      <pre class="rag-content-preview">{expanded ? ragSourceContent(result) : ragSourceContentPreview(result, ragPreviewLength)}</pre>
+                      {#if isRagSourceContentTruncated(result, ragPreviewLength)}
+                        <button class="text-button compact" type="button" onclick={() => toggleRagItem(itemKey)}>
+                          {expanded ? $t("settings.ragShowPreview") : $t("settings.ragShowFull")}
+                        </button>
+                      {/if}
+                    {:else}
+                      <p>{$t("settings.noContent")}</p>
                     {/if}
-                    {#if formatHeadingPath(result.heading_path)}
-                      <div><dt>Heading</dt><dd>{formatHeadingPath(result.heading_path)}</dd></div>
-                    {/if}
-                    {#if formatMatchedTerms(result.matched_terms)}
-                      <div><dt>Matched</dt><dd>{formatMatchedTerms(result.matched_terms)}</dd></div>
-                    {/if}
-                  </dl>
-                  <p>{result.content || $t("settings.noContent")}</p>
-                </article>
-              {/each}
-            </div>
+                  </article>
+                {/each}
+              </div>
+            {/if}
           </section>
         {/each}
       </div>
@@ -476,6 +569,9 @@
     {:else if ragStatusError}
       <p class="placeholder-copy error-copy">{ragStatusError}</p>
     {:else if ragStatus}
+      {#if ragStatus.rag_index?.stale || ragStatus.rag_index?.rebuild_needed}
+        <p class="placeholder-copy error-copy">RAG index の再構築が必要です。下のボタンから再構築できます。</p>
+      {/if}
       <dl class="info-list compact-list">
         <div><dt>Memory files</dt><dd>{memoryTotal()}</dd></div>
         <div><dt>Session summaries</dt><dd>{memoryCounts().session_summaries ?? 0}</dd></div>
