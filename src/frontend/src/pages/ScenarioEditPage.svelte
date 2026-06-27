@@ -16,6 +16,7 @@
   import KnowledgeTab from "../lib/scenario-edit/KnowledgeTab.svelte";
   import PromptTab from "../lib/scenario-edit/PromptTab.svelte";
   import SourceTreePanel from "../lib/scenario-edit/SourceTreePanel.svelte";
+  import { insertLocusRagTag, upsertFrontmatterFields } from "../lib/sourceEditorTools.js";
 
   /** @type {{
    *   route: { scenarioId?: string, mode?: string, query?: Record<string, string> },
@@ -41,6 +42,7 @@
   let newSourceKind = $state("characters");
   let newSourceId = $state("");
   let newSourceName = $state("");
+  let newSourceTemplateKind = $state("default");
   let newSourceError = $state("");
   let loading = $state(true);
   let loadingFile = $state(false);
@@ -158,7 +160,11 @@
   }
 
   async function deleteSourceFile() {
-    if (!route.scenarioId || !selectedPath || deletingSource || sourceDirty || !canDeleteSelectedSource()) {
+    if (sourceDirty) {
+      sourceMessage = translateNow("editor.unsavedDeleteWarning");
+      return;
+    }
+    if (!route.scenarioId || !selectedPath || deletingSource || !canDeleteSelectedSource()) {
       return;
     }
     const pathToDelete = selectedPath;
@@ -276,7 +282,7 @@
     }
     return sourceGroupOrder
       .map((group) => ({ ...group, files: buckets[group.id] || [] }))
-      .filter((group) => group.files.length > 0);
+      .filter((group) => group.files.length > 0 || (!normalizedFilter && ["gm", "characters", "lore", "startings"].includes(group.id)));
   }
 
   /**
@@ -324,15 +330,18 @@
     const id = newSourceId.trim();
     const name = newSourceName.trim() || id;
     if (newSourceKind === "characters") {
-      return `---\ntype: character\nid: ${id}\nname: ${name}\n---\n\n# ${name}\n\n`;
+      return `---\ntype: character\nid: ${id}\nname: ${name}\naliases:\ntags:\nkeywords:\n---\n\n# ${name}\n\n## Personality\n\n## Appearance\n\n## Speaking Style\n\n## Notes\n\n`;
     }
     if (newSourceKind === "lore") {
-      return `---\ntype: lore\nid: ${id}\nname: ${name}\nrag: true\n---\n\n# ${name}\n\n`;
+      const locusExample = newSourceTemplateKind === "locus_rag"
+        ? `\n<locus-rag keywords="${name}" priority="10">\nここに検索対象にしたい設定本文を記述します。\n</locus-rag>\n`
+        : "";
+      return `---\ntype: lore\nid: ${id}\ntitle: ${name}\ntags:\nkeywords:\npriority: 0\nkeywords_enabled: false\n---\n\n# ${name}\n\n## Overview\n\n## Details\n${locusExample}`;
     }
     if (newSourceKind === "startings") {
       return `---\ntype: starting\nid: ${id}\nname: ${name}\n---\n\n${translateNow("editor.startingTemplate", { name })}`;
     }
-    return `---\ntype: gm_prompt\nid: ${id}\n---\n\n# ${name}\n\n`;
+    return `---\ntype: gm_prompt\nid: ${id}\ntitle: ${name}\n---\n\n# ${name}\n\n## Policy\n\n## Style\n\n## Constraints\n\n`;
   }
 
   function validateNewSourceInput() {
@@ -379,6 +388,35 @@
     } finally {
       creatingSource = false;
     }
+  }
+
+  /** @param {string} [kind] */
+  function openCreateFileModal(kind = "") {
+    if (["gm", "characters", "lore", "startings"].includes(kind)) {
+      newSourceKind = kind;
+    }
+    newSourceTemplateKind = "default";
+    createFileModalOpen = true;
+    newSourceError = "";
+  }
+
+  /** @param {Record<string, any>} fields */
+  function applyFrontmatterFields(fields) {
+    sourceContent = upsertFrontmatterFields(sourceContent, fields);
+    sourceDirty = sourceContent !== content;
+    sourceMessage = "";
+  }
+
+  /**
+   * @param {number} start
+   * @param {number} end
+   * @param {Record<string, any>} attrs
+   */
+  function insertLocusRag(start, end, attrs) {
+    const result = insertLocusRagTag(sourceContent, start, end, attrs);
+    sourceContent = result.content;
+    sourceDirty = sourceContent !== content;
+    sourceMessage = "";
   }
 
   async function loadPreviewChoices() {
@@ -479,7 +517,7 @@
       {sourceDirty}
       {loadFile}
       {toggleSourceGroup}
-      openCreateFileModal={() => { createFileModalOpen = true; newSourceError = ""; }}
+      {openCreateFileModal}
     />
 
     <section class="panel editor-panel" aria-labelledby="editor-heading">
@@ -503,6 +541,8 @@
           {deleteSourceFile}
           {canDeleteSelectedSource}
           {updateSourceDraft}
+          {applyFrontmatterFields}
+          {insertLocusRag}
           expandSourceEditor={() => (sourceEditorExpanded = true)}
         />
       {/if}
@@ -565,6 +605,13 @@
       <label>
         <span>Name</span>
         <input bind:value={newSourceName} placeholder={$t("editor.displayName")} />
+      </label>
+      <label>
+        <span>Template</span>
+        <select bind:value={newSourceTemplateKind}>
+          <option value="default">Default</option>
+          <option value="locus_rag" disabled={newSourceKind !== "lore"}>Lore with &lt;locus-rag&gt;</option>
+        </select>
       </label>
       <small class="source-path-preview">{newSourcePath() || `${newSourceKind}/<id>.md`}</small>
 

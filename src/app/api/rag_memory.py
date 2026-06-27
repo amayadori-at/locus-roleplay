@@ -87,6 +87,62 @@ def _update_memory_metadata_response(
     }
 
 
+def _bulk_update_memory_response(
+    vault: Vault,
+    scenario_id: str,
+    payload: dict[str, Any],
+    *,
+    delete: bool = False,
+) -> dict[str, Any]:
+    load_scenario(vault, scenario_id)
+    items = payload.get("items")
+    if not isinstance(items, list) or not items:
+        raise ApiBadRequest("items must be a non-empty list")
+    update_payload = payload.get("update", {})
+    if delete:
+        update_payload = {}
+    elif not isinstance(update_payload, dict):
+        raise ApiBadRequest("update must be an object")
+
+    results: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    stale_paths: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            errors.append({"item": item, "message": "item must be an object"})
+            continue
+        kind = item.get("kind")
+        memory_id = item.get("memory_id")
+        if not isinstance(kind, str) or not isinstance(memory_id, str):
+            errors.append({"item": item, "message": "kind and memory_id are required"})
+            continue
+        try:
+            if delete:
+                result = _delete_memory_file(vault, scenario_id, kind, memory_id, mark_stale=False)
+                stale_paths.append(result["path"])
+            else:
+                result = _update_memory_metadata_response(vault, scenario_id, kind, memory_id, update_payload)
+                if result.get("saved"):
+                    stale_paths.append(result["path"])
+            results.append(result)
+        except Exception as exc:
+            errors.append({"kind": kind, "memory_id": memory_id, "message": str(exc)})
+
+    if stale_paths:
+        from app.memory_summarizer import mark_rag_index_stale
+        mark_rag_index_stale(vault, scenario_id, stale_paths)
+
+    return {
+        "scenario_id": scenario_id,
+        "requested": len(items),
+        "succeeded": len(results),
+        "failed": len(errors),
+        "results": results,
+        "errors": errors,
+        "stale_paths": stale_paths,
+    }
+
+
 def _scenario_rag_status(vault: Vault, scenario_id: str) -> dict[str, Any]:
     load_scenario(vault, scenario_id)
     memory_counts = _memory_file_counts(vault, scenario_id)
@@ -302,3 +358,33 @@ def _memory_file_counts(vault: Vault, scenario_id: str) -> dict[str, int]:
         if directory.is_dir():
             counts[folder] = len([path for path in directory.glob("*.md") if path.is_file()])
     return counts
+
+
+def _delete_memory_file(
+    vault: Vault,
+    scenario_id: str,
+    kind: str,
+    memory_id: str,
+    *,
+    mark_stale: bool = True,
+) -> dict[str, Any]:
+    if kind not in _ALLOWED_MEMORY_KINDS:
+        raise ApiBadRequest(f"Unknown memory kind: {kind!r}")
+    if not re.match(r'^[A-Za-z0-9_-]+$', memory_id):
+        raise ApiBadRequest(f"Invalid memory_id: {memory_id!r}")
+    load_scenario(vault, scenario_id)
+    mem_path = vault.resolve(f"rp/scenarios/{scenario_id}/memory/{kind}/{memory_id}.md")
+    if not mem_path.is_file():
+        raise ApiBadRequest(f"Memory not found: {kind}/{memory_id}")
+    mem_path.unlink()
+    relative_path = f"memory/{kind}/{memory_id}.md"
+    if mark_stale:
+        from app.memory_summarizer import mark_rag_index_stale
+        mark_rag_index_stale(vault, scenario_id, [relative_path])
+    return {
+        "scenario_id": scenario_id,
+        "kind": kind,
+        "memory_id": memory_id,
+        "path": relative_path,
+        "deleted": True,
+    }

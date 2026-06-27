@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -206,7 +207,10 @@ def _run_deferred_turn_job(
         session_id=session_id,
         user_message=user_message,
     )
+    started = time.perf_counter()
     completion = model_client.create_chat_completion(prepared.profile, prepared.messages)
+    response_duration_ms = _duration_ms(started)
+    timings_ms = _response_timings(prepared, response_duration_ms)
     result = finalize_gm_turn_fast(
         vault,
         scenario_id=scenario_id,
@@ -214,6 +218,8 @@ def _run_deferred_turn_job(
         user_message=user_message,
         assistant_content=completion.content,
         prepared=prepared,
+        response_duration_ms=response_duration_ms,
+        timings_ms=timings_ms,
     )
     postprocess_job = start_postprocess_job(
         vault,
@@ -267,3 +273,22 @@ def _validate_ids(scenario_id: str, session_id: str, turn_id: str | None = None)
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def _response_timings(prepared: Any, response_duration_ms: int) -> dict[str, int]:
+    timings: dict[str, int] = {}
+    raw = getattr(prepared, "timings_ms", None)
+    if isinstance(raw, dict):
+        timings.update(
+            {
+                key: value
+                for key, value in raw.items()
+                if isinstance(key, str) and isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            }
+        )
+    timings["rp_model_ms"] = response_duration_ms
+    return timings
+
+
+def _duration_ms(started: float) -> int:
+    return max(0, round((time.perf_counter() - started) * 1000))

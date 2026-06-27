@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from app.loaders import ModelProfile, Persona, Scenario, load_persona, load_profile, load_scenario
@@ -440,6 +441,7 @@ def _expand_node(
             "pin_warnings": warnings,
         }
     elif node_type == "rag":
+        started = time.perf_counter()
         exclude_paths: set[str] = set(active_mods or []) | set(pinned_characters or [])
         query = build_rag_query(user_message=user_message, recent_log=recent_log, state=state)
         sources = _node_sources(node)
@@ -511,6 +513,7 @@ def _expand_node(
                 "token_budget": token_budget,
                 "keyword_token_budget": _node_keyword_token_budget(node),
                 "token_budgets": _node_effective_token_budgets(node),
+                "duration_ms": _duration_ms(started),
                 **({"limits": limits} if limits else {}),
             }
         return {
@@ -531,6 +534,7 @@ def _expand_node(
             "token_budget": token_budget,
             "keyword_token_budget": _node_keyword_token_budget(node),
             "token_budgets": _node_effective_token_budgets(node),
+            "duration_ms": _duration_ms(started),
             **({"limits": limits} if limits else {}),
         }
     elif node_type == "session_log":
@@ -707,6 +711,10 @@ def _character_rag_match_mode(metadata: dict[str, Any]) -> str:
             return "fuzzy"
         return "exact"
     return "exact"
+
+
+def _duration_ms(started: float) -> int:
+    return max(0, round((time.perf_counter() - started) * 1000))
 
 
 def _section(title: str, content: str) -> str:

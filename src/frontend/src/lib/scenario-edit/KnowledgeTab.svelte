@@ -2,6 +2,8 @@
   import { CircleCheck, FilePenLine, RotateCcw, Save, Trash2, X } from "lucide-svelte";
   import {
     applyMemoryConsolidationSuggestion,
+    bulkDeleteMemory,
+    bulkUpdateMemoryMetadata,
     createMemoryConsolidationSuggestions,
     deleteMemory,
     listScenarioMemory,
@@ -63,6 +65,12 @@
   let memoryFilterCharacter = $state("");
   let memoryFilterLocation = $state("");
   let memoryFilterTopic = $state("");
+  let memoryFilterReview = $state("all");
+  /** @type {Record<string, boolean>} */
+  let selectedMemoryKeys = $state({});
+  let bulkMemoryAction = $state("status:resolved");
+  let bulkUpdatingMemory = $state(false);
+  let hydratedFilterScenarioId = "";
   /** @type {Array<Record<string, any>>} */
   let consolidationSuggestions = $state([]);
   let consolidationLoading = $state(false);
@@ -73,6 +81,15 @@
 
   const memoryFilterOptions = $derived(buildMemoryFilterOptions(memoryGroups));
   const consolidationProfileOptions = $derived(profiles.filter((profile) => profile.kind === "memory_summary" || profile.kind === "state_update" || profile.kind === "roleplay"));
+  const filteredMemoryItems = $derived(flattenFilteredMemoryItems(memoryGroups));
+  const selectedMemoryItems = $derived(filteredMemoryItems.filter((item) => selectedMemoryKeys[item.key]));
+  const staleMemoryCount = $derived(flattenMemoryItems(memoryGroups).filter((item) => isReviewCandidate(item.item)).length);
+
+  $effect(() => {
+    if (scenarioId && hydratedFilterScenarioId === scenarioId) {
+      saveMemoryFilters();
+    }
+  });
 
   export async function loadRagStatus() {
     if (!scenarioId) return;
@@ -130,12 +147,14 @@
 
   export async function loadMemory() {
     if (!scenarioId) return;
+    hydrateMemoryFilters();
     memoryLoading = true;
     memoryError = "";
     memoryMessage = "";
     try {
       const payload = await listScenarioMemory(scenarioId);
       memoryGroups = payload.groups || {};
+      pruneSelectedMemoryKeys();
     } catch (caught) {
       memoryError = caught instanceof Error ? caught.message : translateNow("editor.loadFilesError");
     } finally {
@@ -218,7 +237,7 @@
    * @param {Record<string, any>} item
    */
   function memoryMatchesFilters(kind, item) {
-    return memoryItemMatchesFilters(kind, item, {
+    if (!memoryItemMatchesFilters(kind, item, {
       kind: memoryFilterKind,
       status: memoryFilterStatus,
       source: memoryFilterSource,
@@ -226,7 +245,152 @@
       character: memoryFilterCharacter,
       location: memoryFilterLocation,
       topic: memoryFilterTopic
-    });
+    })) {
+      return false;
+    }
+    if (memoryFilterReview === "stale") {
+      return isReviewCandidate(item);
+    }
+    if (memoryFilterReview === "active_old") {
+      const status = item.status || item.metadata?.status || "active";
+      return status === "active" && typeof item.last_seen_turn === "number" && item.last_seen_turn <= 4;
+    }
+    return true;
+  }
+
+  /** @param {Record<string, Array<Record<string, any>>>} groups */
+  function flattenMemoryItems(groups) {
+    /** @type {Array<{ key: string, kind: string, memoryId: string, item: Record<string, any> }>} */
+    const rows = [];
+    for (const [kind, items] of Object.entries(groups || {})) {
+      for (const item of items || []) {
+        const memoryId = item.path?.split("/")?.pop()?.replace(/\.md$/, "") ?? "";
+        if (!memoryId) continue;
+        rows.push({ key: `${kind}/${memoryId}`, kind, memoryId, item });
+      }
+    }
+    return rows;
+  }
+
+  /** @param {Record<string, Array<Record<string, any>>>} groups */
+  function flattenFilteredMemoryItems(groups) {
+    return flattenMemoryItems(groups).filter((row) => memoryMatchesFilters(row.kind, row.item));
+  }
+
+  /** @param {Record<string, any>} item */
+  function isReviewCandidate(item) {
+    const status = item.status || item.metadata?.status || "active";
+    return status === "stale" || status === "resolved" || status === "archived";
+  }
+
+  function memoryFilterStorageKey() {
+    return `locus_memory_filters_${scenarioId || "global"}`;
+  }
+
+  function hydrateMemoryFilters() {
+    if (!scenarioId || hydratedFilterScenarioId === scenarioId) return;
+    hydratedFilterScenarioId = scenarioId;
+    try {
+      const raw = window.localStorage.getItem(memoryFilterStorageKey());
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (parsed && typeof parsed === "object") {
+        memoryFilterKind = typeof parsed.kind === "string" ? parsed.kind : "all";
+        memoryFilterStatus = typeof parsed.status === "string" ? parsed.status : "all";
+        memoryFilterSource = typeof parsed.source === "string" ? parsed.source : "all";
+        memoryFilterRag = typeof parsed.rag === "string" ? parsed.rag : "all";
+        memoryFilterCharacter = typeof parsed.character === "string" ? parsed.character : "";
+        memoryFilterLocation = typeof parsed.location === "string" ? parsed.location : "";
+        memoryFilterTopic = typeof parsed.topic === "string" ? parsed.topic : "";
+        memoryFilterReview = typeof parsed.review === "string" ? parsed.review : "all";
+      }
+    } catch {
+      // localStorage is optional; defaults remain usable.
+    }
+  }
+
+  function saveMemoryFilters() {
+    try {
+      window.localStorage.setItem(memoryFilterStorageKey(), JSON.stringify({
+        kind: memoryFilterKind,
+        status: memoryFilterStatus,
+        source: memoryFilterSource,
+        rag: memoryFilterRag,
+        character: memoryFilterCharacter,
+        location: memoryFilterLocation,
+        topic: memoryFilterTopic,
+        review: memoryFilterReview
+      }));
+    } catch {
+      // Ignore storage failures; filters still work for the current page.
+    }
+  }
+
+  function resetMemoryFilters() {
+    memoryFilterKind = "all";
+    memoryFilterStatus = "all";
+    memoryFilterSource = "all";
+    memoryFilterRag = "all";
+    memoryFilterCharacter = "";
+    memoryFilterLocation = "";
+    memoryFilterTopic = "";
+    memoryFilterReview = "all";
+    selectedMemoryKeys = {};
+  }
+
+  function pruneSelectedMemoryKeys() {
+    const available = new Set(flattenMemoryItems(memoryGroups).map((row) => row.key));
+    selectedMemoryKeys = Object.fromEntries(Object.entries(selectedMemoryKeys).filter(([key]) => available.has(key)));
+  }
+
+  function selectFilteredMemory() {
+    selectedMemoryKeys = {
+      ...selectedMemoryKeys,
+      ...Object.fromEntries(filteredMemoryItems.map((row) => [row.key, true]))
+    };
+  }
+
+  function clearSelectedMemory() {
+    selectedMemoryKeys = {};
+  }
+
+  /**
+   * @param {string} key
+   * @param {boolean} checked
+   */
+  function toggleMemorySelection(key, checked) {
+    selectedMemoryKeys = { ...selectedMemoryKeys, [key]: checked };
+  }
+
+  function bulkPatchFromAction() {
+    if (bulkMemoryAction === "rag:on") return { rag_enabled: true };
+    if (bulkMemoryAction === "rag:off") return { rag_enabled: false };
+    if (bulkMemoryAction.startsWith("status:")) return { status: bulkMemoryAction.split(":")[1] };
+    return {};
+  }
+
+  async function doBulkMemoryAction() {
+    if (!scenarioId || bulkUpdatingMemory || selectedMemoryItems.length === 0) return;
+    const items = selectedMemoryItems.map((row) => ({ kind: row.kind, memory_id: row.memoryId }));
+    const isDelete = bulkMemoryAction === "delete";
+    if (isDelete && !window.confirm(`選択中の Memory ${items.length} 件を削除します。よろしいですか？`)) return;
+    bulkUpdatingMemory = true;
+    memoryMessage = "";
+    memoryError = "";
+    try {
+      const payload = isDelete
+        ? await bulkDeleteMemory(scenarioId, items)
+        : await bulkUpdateMemoryMetadata(scenarioId, items, bulkPatchFromAction());
+      memoryMessage = `一括操作: 成功 ${payload.succeeded ?? 0} 件 / 失敗 ${payload.failed ?? 0} 件`;
+      if ((payload.failed ?? 0) > 0) {
+        memoryError = (payload.errors || []).map((/** @type {Record<string, any>} */ error) => error.message).join(" / ");
+      }
+      selectedMemoryKeys = {};
+      await Promise.all([loadMemory(), loadRagStatus()]);
+    } catch (caught) {
+      memoryError = caught instanceof Error ? caught.message : translateNow("editor.memoryUpdateError");
+    } finally {
+      bulkUpdatingMemory = false;
+    }
   }
 
   /**
@@ -423,6 +587,14 @@
       </select>
     </label>
     <label>
+      <span>棚卸し</span>
+      <select bind:value={memoryFilterReview}>
+        <option value="all">{$t("common.all")}</option>
+        <option value="stale">stale / resolved / archived ({staleMemoryCount})</option>
+        <option value="active_old">active + early last_seen</option>
+      </select>
+    </label>
+    <label>
       <span>{$t("editor.memoryFilterCharacters")}</span>
       <input bind:value={memoryFilterCharacter} type="search" />
     </label>
@@ -434,6 +606,27 @@
       <span>{$t("editor.memoryFilterTopics")}</span>
       <input bind:value={memoryFilterTopic} type="search" />
     </label>
+  </div>
+  <div class="memory-bulk-bar">
+    <div class="memory-bulk-summary">
+      <strong>{selectedMemoryItems.length}</strong>
+      <span>/ {filteredMemoryItems.length} selected</span>
+    </div>
+    <button type="button" disabled={!filteredMemoryItems.length} onclick={selectFilteredMemory}>表示中を選択</button>
+    <button type="button" disabled={!selectedMemoryItems.length} onclick={clearSelectedMemory}>選択解除</button>
+    <button type="button" onclick={resetMemoryFilters}>フィルタ初期化</button>
+    <select bind:value={bulkMemoryAction} disabled={!selectedMemoryItems.length || bulkUpdatingMemory}>
+      <option value="status:resolved">status: resolved</option>
+      <option value="status:active">status: active</option>
+      <option value="status:stale">status: stale</option>
+      <option value="status:archived">status: archived</option>
+      <option value="rag:on">RAG ON</option>
+      <option value="rag:off">RAG OFF</option>
+      <option value="delete">削除</option>
+    </select>
+    <button type="button" disabled={!selectedMemoryItems.length || bulkUpdatingMemory} onclick={() => void doBulkMemoryAction()}>
+      {bulkUpdatingMemory ? "一括操作中" : "一括適用"}
+    </button>
   </div>
   {#if memoryLoading}
     <p class="notice">{$t("editor.loadingFiles")}</p>
@@ -449,7 +642,16 @@
           <ul class="memory-list">
             {#each filteredItems as item}
               {@const memId = item.path.split("/").pop()?.replace(/\.md$/, "") ?? ""}
+              {@const memKey = `${kind}/${memId}`}
               <li class="memory-item">
+                <label class="memory-select">
+                  <input
+                    type="checkbox"
+                    checked={!!selectedMemoryKeys[memKey]}
+                    onchange={(event) => toggleMemorySelection(memKey, event.currentTarget.checked)}
+                    aria-label={`select ${item.title || memId}`}
+                  />
+                </label>
                 <div class="memory-item-info">
                   <span class="memory-item-title">{item.title || memId}</span>
                   <span class="memory-item-meta">
@@ -457,6 +659,9 @@
                     <span>{item.status || "active"}</span>
                     <span>{item.source || "unknown"}</span>
                     <span>{item.rag_enabled ? $t("editor.memoryRagEnabledShort") : $t("editor.memoryRagDisabledShort")}</span>
+                    {#if item.last_seen_turn !== undefined && item.last_seen_turn !== null}
+                      <span>last seen turn {item.last_seen_turn}</span>
+                    {/if}
                   </span>
                   {#if item.excerpt}
                     <span class="memory-item-excerpt">{item.excerpt}</span>

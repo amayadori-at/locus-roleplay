@@ -33,6 +33,7 @@ from app.api.personas_profiles import (
     _persona_summaries,
     _profile_detail,
     _profile_summaries,
+    _test_profile_response,
     _update_persona,
     _update_profile,
 )
@@ -49,6 +50,8 @@ from app.api.prompt_graphs import (
 )
 from app.api.rag_memory import (
     _ALLOWED_MEMORY_KINDS,
+    _bulk_update_memory_response,
+    _delete_memory_file,
     _scenario_memory_response,
     _scenario_rag_rebuild_response,
     _scenario_rag_rebuild_vectors_response,
@@ -141,6 +144,7 @@ def handle_post(
         payload = _decode_json_body(body)
         for handler in (
             _handle_core_post,
+            _handle_persona_profile_post,
             _handle_scenario_content_post,
             _handle_rag_memory_post,
             _handle_session_post,
@@ -358,6 +362,20 @@ def _handle_core_post(
     return None
 
 
+def _handle_persona_profile_post(
+    route: list[str],
+    vault: Vault,
+    payload: dict[str, Any],
+    *,
+    model_client: ChatCompletionClient | None = None,
+    **_clients: Any,
+) -> ApiResponse | ApiStreamResponse | None:
+    if len(route) == 4 and route[:2] == ["api", "profiles"] and route[3] == "test":
+        profile_id = _validate_id(route[2], "profile")
+        return _json_response(_test_profile_response(vault, profile_id, model_client, payload))
+    return None
+
+
 def _handle_scenario_content_post(
     route: list[str],
     vault: Vault,
@@ -387,6 +405,12 @@ def _handle_rag_memory_post(
     if len(route) == 5 and route[:2] == ["api", "scenarios"] and route[3:5] == ["rag", "rebuild-vectors"]:
         scenario_id = _validate_id(route[2], "scenario")
         return _json_response(_scenario_rag_rebuild_vectors_response(vault, scenario_id))
+    if len(route) == 5 and route[:2] == ["api", "scenarios"] and route[3:5] == ["memory", "bulk"]:
+        scenario_id = _validate_id(route[2], "scenario")
+        return _json_response(_bulk_update_memory_response(vault, scenario_id, payload))
+    if len(route) == 6 and route[:2] == ["api", "scenarios"] and route[3:6] == ["memory", "bulk", "delete"]:
+        scenario_id = _validate_id(route[2], "scenario")
+        return _json_response(_bulk_update_memory_response(vault, scenario_id, payload, delete=True))
     if len(route) == 5 and route[:2] == ["api", "scenarios"] and route[3:5] == ["memory", "consolidation-suggestions"]:
         scenario_id = _validate_id(route[2], "scenario")
         session_id = _require_id(payload, "session_id")
@@ -591,20 +615,13 @@ def _handle_rag_memory_delete(route: list[str], _query: dict[str, list[str]], va
             raise ApiBadRequest(f"Unknown memory kind: {kind!r}")
         if not re.match(r'^[A-Za-z0-9_-]+$', memory_id):
             raise ApiBadRequest(f"Invalid memory_id: {memory_id!r}")
-        load_scenario(vault, scenario_id)
-        mem_path = vault.resolve(f"rp/scenarios/{scenario_id}/memory/{kind}/{memory_id}.md")
-        if not mem_path.is_file():
+        try:
+            result = _delete_memory_file(vault, scenario_id, kind, memory_id)
+        except ApiBadRequest as exc:
+            if "Memory not found" not in str(exc):
+                raise
             return _json_response({"error": "not_found", "message": f"Memory not found: {kind}/{memory_id}"}, status=404)
-        mem_path.unlink()
-        from app.memory_summarizer import mark_rag_index_stale
-        mark_rag_index_stale(vault, scenario_id, [])
-        return _json_response({
-            "scenario_id": scenario_id,
-            "kind": kind,
-            "memory_id": memory_id,
-            "path": f"memory/{kind}/{memory_id}.md",
-            "deleted": True,
-        })
+        return _json_response(result)
     return None
 
 

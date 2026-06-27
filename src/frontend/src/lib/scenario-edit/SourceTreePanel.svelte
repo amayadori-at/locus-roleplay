@@ -12,7 +12,7 @@
    *   sourceDirty?: boolean,
    *   loadFile?: (path: string) => Promise<void> | void,
    *   toggleSourceGroup?: (groupId: string) => void,
-   *   openCreateFileModal?: () => void,
+   *   openCreateFileModal?: (kind?: string) => void,
    * }} */
   let {
     hidden = false,
@@ -55,7 +55,7 @@
       class="icon-button compact-icon"
       type="button"
       title={$t("editor.newFile")}
-      onclick={openCreateFileModal}
+      onclick={() => openCreateFileModal()}
     >
       <FilePlus2 size={16} aria-hidden="true" />
     </button>
@@ -79,21 +79,33 @@
     <div class="source-groups">
       {#each groupedSourceFiles as group}
         <section class="source-group">
-          <button
-            class="source-group-toggle"
-            class:empty={group.files.length === 0}
-            type="button"
-            disabled={group.files.length === 0}
-            onclick={() => toggleSourceGroup(group.id)}
-          >
-            {#if isSourceGroupOpen(group.id, sourceGroupOpen)}
-              <ChevronDown size={15} aria-hidden="true" />
-            {:else}
-              <ChevronRight size={15} aria-hidden="true" />
+          <div class="source-group-row">
+            <button
+              class="source-group-toggle"
+              class:empty={group.files.length === 0}
+              type="button"
+              disabled={group.files.length === 0}
+              onclick={() => toggleSourceGroup(group.id)}
+            >
+              {#if isSourceGroupOpen(group.id, sourceGroupOpen)}
+                <ChevronDown size={15} aria-hidden="true" />
+              {:else}
+                <ChevronRight size={15} aria-hidden="true" />
+              {/if}
+              <strong>{$t(group.labelKey)}</strong>
+              <span>{$t("editor.fileCount", { count: group.files.length })}</span>
+            </button>
+            {#if ["gm", "characters", "lore", "startings"].includes(group.id)}
+              <button
+                class="icon-button compact-icon source-group-add"
+                type="button"
+                title={`${$t("editor.newFile")} ${group.id}`}
+                onclick={() => openCreateFileModal(group.id)}
+              >
+                <FilePlus2 size={14} aria-hidden="true" />
+              </button>
             {/if}
-            <strong>{$t(group.labelKey)}</strong>
-            <span>{$t("editor.fileCount", { count: group.files.length })}</span>
-          </button>
+          </div>
           {#if isSourceGroupOpen(group.id, sourceGroupOpen) && group.files.length}
             <ul class="select-list grouped-select-list">
               {#each group.files as file}

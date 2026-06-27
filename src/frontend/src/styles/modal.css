@@ -524,11 +524,48 @@
   gap: 10px;
 }
 
-.rag-source-group h5 {
-  margin: 0;
+.rag-context-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.rag-context-actions button,
+.text-button.compact {
+  justify-self: start;
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  padding: 5px 9px;
+  background: var(--c-surface);
   color: var(--c-text);
+  font-size: 12px;
+}
+
+.rag-source-group-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: var(--c-surface-2);
+  color: var(--c-text);
+  text-align: left;
+}
+
+.rag-source-group-toggle span {
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 13px;
   font-weight: 700;
+}
+
+.rag-source-group-toggle small {
+  flex: 0 0 auto;
+  color: var(--c-text-muted);
+  font-size: 12px;
 }
 
 .rag-result-head {
@@ -583,6 +620,31 @@
   margin: 0;
 }
 
+.rag-current-summary,
+.profile-test-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--c-surface-2);
+}
+
+.rag-current-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.rag-current-chips span {
+  border: 1px solid var(--c-border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: var(--c-surface);
+  font-size: 12px;
+}
+
 .rag-query-row dd {
   min-width: 0;
 }
@@ -608,6 +670,21 @@
   color: var(--c-text);
   font-size: 13px;
   line-height: 1.55;
+}
+
+.rag-content-preview {
+  max-height: 240px;
+  overflow: auto;
+  box-sizing: border-box;
+  margin: 0;
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  padding: 8px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  font: 12px/1.5 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .memory-browser {

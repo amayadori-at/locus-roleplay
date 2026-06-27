@@ -125,6 +125,14 @@ export function updateProfile(profileId, patch) {
 }
 
 /**
+ * @param {string} profileId
+ * @param {Record<string, any>} [patch]
+ */
+export function testProfile(profileId, patch = {}) {
+  return apiPost(`/api/profiles/${encodeURIComponent(profileId)}/test`, { patch });
+}
+
+/**
  * @param {string} scenarioId
  */
 export function listScenarioSourceFiles(scenarioId) {
@@ -363,6 +371,23 @@ export function updateMemoryMetadata(scenarioId, kind, memoryId, patch) {
     `/api/scenarios/${encodeURIComponent(scenarioId)}/memory/${encodeURIComponent(kind)}/${encodeURIComponent(memoryId)}`,
     patch
   );
+}
+
+/**
+ * @param {string} scenarioId
+ * @param {Array<{ kind: string, memory_id: string }>} items
+ * @param {{ rag_enabled?: boolean, status?: string }} patch
+ */
+export function bulkUpdateMemoryMetadata(scenarioId, items, patch) {
+  return apiPost(`/api/scenarios/${encodeURIComponent(scenarioId)}/memory/bulk`, { items, update: patch });
+}
+
+/**
+ * @param {string} scenarioId
+ * @param {Array<{ kind: string, memory_id: string }>} items
+ */
+export function bulkDeleteMemory(scenarioId, items) {
+  return apiPost(`/api/scenarios/${encodeURIComponent(scenarioId)}/memory/bulk/delete`, { items });
 }
 
 /**
